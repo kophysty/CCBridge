@@ -76,17 +76,22 @@ def test_run_claude_returns_parsed_json_on_success(
     assert result.stdout == json.dumps(payload)
 
 
-def test_run_claude_passes_prompt_and_format_flags(
+def test_run_claude_argv_skeleton_and_no_prompt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """argv skeleton: claude --print --output-format json. Prompt MUST
+    NOT appear in argv (audit finding #2 — Windows cmdline size limit
+    + OWASP A03 defense-in-depth). Prompt arrives via stdin instead.
+    """
+
     def handler(
         argv: list[str], kwargs: dict[str, Any]
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(argv, 0, stdout='{"k":1}', stderr="")
 
     calls = _stub_run(monkeypatch, handler)
-
-    run_claude(prompt="ping", cwd=tmp_path)
+    secret_marker = "DISTINCTIVE_PROMPT_MARKER_J42"
+    run_claude(prompt=secret_marker, cwd=tmp_path)
 
     assert len(calls) == 1
     argv, kwargs = calls[0]
@@ -95,9 +100,11 @@ def test_run_claude_passes_prompt_and_format_flags(
     assert "--output-format" in argv
     fmt_idx = argv.index("--output-format")
     assert argv[fmt_idx + 1] == "json"
-    # Prompt is passed as positional, not on stdin.
-    assert "ping" in argv
-    # cwd must be honoured so claude sees the right project.
+
+    assert secret_marker not in " ".join(argv), (
+        f"prompt leaked into argv: {argv}"
+    )
+    assert kwargs.get("input") == secret_marker
     assert kwargs.get("cwd") == tmp_path
 
 

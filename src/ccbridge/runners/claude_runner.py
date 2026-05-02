@@ -2,7 +2,7 @@
 
 We invoke Claude Code in non-interactive mode::
 
-    claude --print --output-format json <prompt>
+    claude --print --output-format json     # argv (prompt via stdin)
 
 Claude prints a single JSON document to stdout and exits 0 on success.
 Anything else — non-zero exit, malformed JSON, missing executable,
@@ -11,6 +11,10 @@ enough context for the orchestrator to decide what to do.
 
 Design notes:
 
+* **Prompt via stdin, not argv** (audit finding #2 / OWASP A03). Same
+  rationale as :mod:`codex_runner`: medium prompts reach 5-15 KB,
+  Windows command line ≈ 8 KB. Stdin also closes injection vectors
+  via shell wrappers.
 * We do NOT manage API keys here. Claude reads ``ANTHROPIC_API_KEY``
   from the inherited environment (see ARCHITECTURE.md §6.1). Callers
   who want to override env can pass ``env=`` explicitly.
@@ -128,12 +132,19 @@ def run_claude(
         unparseable JSON stdout. Use ``err.cause`` for the original
         exception when branching on failure mode is needed.
     """
-    argv = [executable, "--print", "--output-format", "json", prompt]
-    logger.debug("running claude: %s (cwd=%s, timeout=%s)", argv, cwd, timeout)
+    argv = [executable, "--print", "--output-format", "json"]
+    logger.debug(
+        "running claude: %s (cwd=%s, timeout=%s, prompt_len=%d)",
+        argv,
+        cwd,
+        timeout,
+        len(prompt),
+    )
 
     try:
         completed = subprocess.run(
             argv,
+            input=prompt,
             cwd=cwd,
             env=env,
             capture_output=True,
