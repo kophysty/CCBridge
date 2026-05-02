@@ -33,11 +33,14 @@ PR2 разделён на два под-этапа. Каждый под-этап
            core/orchestrator.py                                 Ядро работает с моками
            + integration-тесты с mock subprocess                runner'ов.
   ──────  ──────────────────────────────────────────────────  ──────────────────────────
-  PR2b    renderers/{base,silent,jsonl,rich}.py                 pytest зелёный.
+  PR2b    renderers/{base,silent,rich}.py                       pytest зелёный.
            transports/stop_hook.py                              AC-1, AC-2, AC-5..AC-8,
            transports/audit_watch.py                            AC-10, AC-15, AC-21
            cli.py (Click)                                       закрыты. MVP работает
            + integration + e2e (skip-by-default)                end-to-end.
+
+           NB: jsonl_renderer удалён (ADR-002 — audit.jsonl
+           пишет orchestrator, renderer'ы только UI/broadcast).
 ```
 
 ---
@@ -177,6 +180,13 @@ Merge в `main` через `git merge --no-ff pr2a/orchestrator-runners`
 
 ### Порядок реализации (TDD)
 
+> ⚠️ **Архитектурное уточнение (ADR-002, 2026-05-02):**
+> audit.jsonl writes владеет orchestrator (PR2a уже это делает),
+> renderer'ы НЕ пишут в audit.jsonl — они только UI/broadcast.
+> `JsonlRenderer` как класс **удалён** из плана. Persistence —
+> ответственность core, отображение — ответственность renderers.
+> См. [`ADR/ADR-002-audit-jsonl-ownership-orchestrator.md`](../../ADR/ADR-002-audit-jsonl-ownership-orchestrator.md).
+
 ```
   №   Модуль                               Ключевые задачи                  AC закрытие
   ──  ───────────────────────────────────  ───────────────────────────────  ──────────────
@@ -184,26 +194,32 @@ Merge в `main` через `git merge --no-ff pr2a/orchestrator-runners`
                                             __call__(event) → None.          для AC-21)
   2   renderers/silent_renderer.py          Тестовый: записывает события     (тесты)
                                             в list для проверок.
-  3   renderers/jsonl_renderer.py           Пишет события в audit.jsonl      AC-21 (event
-                                            через AuditLog.append.            stream)
-  4   renderers/rich_renderer.py            rich.live спиннер +              AC-21 (rich UI
+  3   renderers/rich_renderer.py            rich.live спиннер +              AC-21 (rich UI
                                             форматтированные блоки.           в Stop hook)
                                             Spec в ARCHITECTURE.md §2.9.
+                                            (УБРАНО из плана:
+                                             renderers/jsonl_renderer.py —
+                                             audit.jsonl пишет orchestrator,
+                                             см. ADR-002.)
   ──  ───────────────────────────────────  ───────────────────────────────  ──────────────
-  5   transports/stop_hook.py               Entry point из Claude Code:      AC-2 (полный цикл
+  4   transports/stop_hook.py               Entry point из Claude Code:      AC-2 (полный цикл
                                             читает stdin JSON,                без вмешат.)
                                             проверяет stop_hook_active,      AC-10 (timeout
                                             вызывает orchestrator,            → освобождение
                                             пишет decision: block в           lockfile)
                                             stdout. EventBus →
-                                            RichRenderer (stdout) +
-                                            JsonlRenderer.
-  6   transports/audit_watch.py             tail -f audit.jsonl с rich       AC-21 (live tail
+                                            RichRenderer (stdout).
+                                            audit.jsonl уже пишется
+                                            orchestrator'ом (ADR-002).
+  5   transports/audit_watch.py             tail -f audit.jsonl с rich       AC-21 (live tail
                                             форматтированием. Используется    < 1 сек)
                                             как ccbridge audit watch.        AC-5/AC-12
                                             Tolerant к torn-write.            (через AuditLog)
+                                            Watcher читает файл напрямую
+                                            (между процессами), НЕ через
+                                            in-process EventBus.
   ──  ───────────────────────────────────  ───────────────────────────────  ──────────────
-  7   cli.py (Click)                        Команды:                         AC-1, AC-6, AC-7,
+  6   cli.py (Click)                        Команды:                         AC-1, AC-6, AC-7,
                                             - ccbridge init <path>            AC-8, AC-15
                                             - ccbridge audit run
                                             - ccbridge audit get [<uuid>]
@@ -220,8 +236,8 @@ Merge в `main` через `git merge --no-ff pr2a/orchestrator-runners`
   ──────────────────────────────────────  ─────────────────────────────────────────────
   tests/unit/test_renderers.py             Каждый renderer на одном потоке событий.
                                             Silent — список накапливается.
-                                            Jsonl — файл содержит N валидных строк.
                                             Rich — capsys, проверка ключевых маркеров.
+                                            (Jsonl renderer удалён — см. ADR-002.)
   ──────────────────────────────────────  ─────────────────────────────────────────────
   tests/integration/test_stop_hook.py      stdin фейкового Claude JSON →
                                             decision: block в stdout. timeout simulation.

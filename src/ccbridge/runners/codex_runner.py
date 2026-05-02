@@ -1,14 +1,35 @@
 """Subprocess wrapper around the OpenAI ``codex`` CLI.
 
-Codex is invoked non-interactively::
+Codex is invoked non-interactively as a code reviewer::
 
-    codex exec --json <prompt>
+    codex exec --json --sandbox read-only       # argv (prompt via stdin)
 
-The CLI prints a model response to stdout. In the happy path that is a
-single JSON object — the Verdict. In practice the model often wraps it
-in a markdown fence (`````json ... `````)
-or prefixes it with prose. :func:`extract_json_payload` extracts the
-first complete JSON object from such output.
+Two architectural constraints (audit findings #2 / #3, OWASP A03 / A04):
+
+* **Prompt via stdin, not argv.** Medium prompts (rules + diff +
+  recent audits) routinely reach 5-15 KB; Windows' command line
+  limit is ~8 KB. Stdin also closes a class of injection vectors
+  where a buggy shell wrapper might re-tokenize argv.
+
+* **``--sandbox read-only`` is mandatory.** Codex acts as an
+  *auditor*; it must not be able to mutate the workspace, even via
+  tool calls in its agent loop. CCBridge enforces this at the
+  process boundary, not by trust.
+
+Output contract (codex 0.125.0):
+
+The CLI prints a JSONL event stream to stdout::
+
+    {"type":"thread.started","thread_id":"..."}
+    {"type":"turn.started"}
+    {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"<verdict json as escaped string>"}}
+    {"type":"turn.completed","usage":{...}}
+
+The Verdict JSON is the ``text`` field of the *last*
+``item.completed`` event whose ``item.type == "agent_message"``.
+:func:`extract_verdict_from_event_stream` handles this. Inside that
+``text`` the LLM may still wrap its JSON in markdown fences;
+:func:`extract_json_payload` is the lenient inner parser for that.
 
 Failure modes handled here (closes ARCHITECTURE.md AC-4 lenient JSON,
 AC-19 network resilience):
@@ -16,7 +37,12 @@ AC-19 network resilience):
 * Non-zero exit with a 429-shaped stderr → retry with backoff. Honour
   ``Retry-After`` when present in stderr.
 * Non-zero exit, non-rate-limit → fail fast.
-* Unparseable stdout → one short retry, then :class:`CodexRunnerError`.
+* Stream without an ``agent_message`` event → one short retry, then
+  :class:`CodexRunnerError`.
+* ``agent_message.text`` is not parseable as a JSON object → one
+  short retry, then :class:`CodexRunnerError`.
+* Stream contains an explicit ``error`` event → ValueError surfaces
+  as :class:`CodexRunnerError` (no retry — server told us off).
 * Missing executable → :class:`CodexRunnerError`.
 * Timeout → :class:`CodexRunnerError`.
 
@@ -36,6 +62,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from ccbridge.runners import resolve_executable
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +183,62 @@ def extract_json_payload(raw: str) -> dict[str, Any]:
     return loaded
 
 
+def extract_verdict_from_event_stream(raw: str) -> str:
+    """Pull the verdict text out of a codex JSONL event stream.
+
+    The stream contains structural events (``thread.started``,
+    ``turn.started``, ``turn.completed``) interleaved with
+    ``item.completed`` events. The verdict sits in the ``text`` field
+    of the *last* ``item.completed`` whose ``item.type == "agent_message"``.
+
+    We take the last such message (not the first) because the agent
+    may produce intermediate messages before its final answer.
+
+    Raises:
+        ValueError: empty input, no agent_message in stream, or an
+            explicit ``error`` event was emitted by the server.
+    """
+    if not raw or not raw.strip():
+        raise ValueError("empty event stream")
+
+    last_message: str | None = None
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            # Tolerant of torn final line and any non-JSON noise.
+            continue
+        if not isinstance(event, dict):
+            continue
+
+        event_type = event.get("type")
+        if event_type == "error":
+            message = event.get("message") or "codex emitted error event"
+            raise ValueError(f"codex error event in stream: {message}")
+
+        if event_type != "item.completed":
+            continue
+
+        item = event.get("item")
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "agent_message":
+            # Skip tool_call, function_call, etc. — only agent_message
+            # carries a verdict.
+            continue
+        text = item.get("text")
+        if isinstance(text, str):
+            last_message = text
+
+    if last_message is None:
+        raise ValueError("no agent_message item.completed in event stream")
+
+    return last_message
+
+
 def _find_first_balanced_object(text: str) -> tuple[int, int] | None:
     """Return (start, end_exclusive) of the first balanced ``{...}`` slice.
 
@@ -208,14 +292,32 @@ def run_codex(
     max_json_retries: int = DEFAULT_MAX_JSON_RETRIES,
     backoff_seconds: tuple[int, ...] = DEFAULT_BACKOFF_SECONDS,
 ) -> CodexRunResult:
-    """Invoke ``codex exec --json <prompt>`` with retries and lenient JSON.
+    """Invoke ``codex exec --json --sandbox read-only`` with retries.
 
-    Returns a :class:`CodexRunResult` only on successful invocation that
-    yields a parseable JSON object. All failure paths raise
+    Prompt is delivered via stdin (audit findings #2 / #3). Stdout
+    is parsed as a JSONL event stream; the verdict lives in the last
+    ``item.completed`` agent_message. See module docstring.
+
+    Returns a :class:`CodexRunResult` only on successful invocation
+    that yields a parseable JSON object. All failure paths raise
     :class:`CodexRunnerError` (or :class:`CodexRateLimitError` for
     exhausted 429 retries).
     """
-    argv = [executable, "exec", "--json", prompt]
+    try:
+        resolved = resolve_executable(executable)
+    except FileNotFoundError as exc:
+        raise CodexRunnerError(
+            f"codex executable not found at {executable!r}",
+            cause=exc,
+        ) from exc
+
+    argv = [
+        resolved,
+        "exec",
+        "--json",
+        "--sandbox",
+        "read-only",
+    ]
     rate_limit_retries = 0
     json_retries = 0
     last_stdout = ""
@@ -226,6 +328,7 @@ def run_codex(
         try:
             completed = subprocess.run(
                 argv,
+                input=prompt,
                 cwd=cwd,
                 env=env,
                 capture_output=True,
@@ -282,11 +385,12 @@ def run_codex(
             )
 
         try:
-            parsed = extract_json_payload(last_stdout)
+            verdict_text = extract_verdict_from_event_stream(last_stdout)
+            parsed = extract_json_payload(verdict_text)
         except ValueError as exc:
             if json_retries >= max_json_retries:
                 raise CodexRunnerError(
-                    f"codex stdout did not contain valid JSON: {exc}",
+                    f"codex stream did not yield a valid verdict: {exc}",
                     returncode=last_returncode,
                     stdout=last_stdout,
                     stderr=last_stderr,
@@ -294,7 +398,7 @@ def run_codex(
                     cause=exc,
                 ) from exc
             logger.warning(
-                "codex returned unparseable JSON; retrying once (%s)", exc
+                "codex stream/verdict unparseable; retrying once (%s)", exc
             )
             time.sleep(JSON_RETRY_PAUSE_SEC)
             json_retries += 1

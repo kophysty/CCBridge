@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"FIXTURE_THREAD_ID"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"schema_version\":1,\"verdict\":\"pass\",\"summary\":\"ok\",\"issues\":[],\"verdict_confidence\":0.9,\"issues_completeness\":0.9,\"files_reviewed\":[],\"rules_checked\":[\"R-001\"]}"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0}}

@@ -65,6 +65,11 @@ audit.jsonl.tmp
 identity.json
 .ccbridge/
 
+# Test fixtures are tracked even though they share the .jsonl extension
+# with runtime artefacts above. They are static, version-controlled,
+# never regenerated at runtime.
+!tests/fixtures/**/*.jsonl
+
 # ──────────────────────────────────────────────────────────────────
 # IDE / editors
 # ──────────────────────────────────────────────────────────────────

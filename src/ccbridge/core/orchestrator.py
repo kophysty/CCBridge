@@ -97,6 +97,27 @@ TERMINAL_VERDICTS = frozenset({"pass", "needs_human", "skipped", "error"})
 
 
 # ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+
+class AuditPersistenceError(OSError):
+    """Raised when ``audit_log.append`` fails inside ``_emit``.
+
+    Subclasses :class:`OSError` so that callers who wrap ``run_audit``
+    with ``except OSError:`` still catch it. The :func:`_run_loop`
+    catch is narrow on this class specifically — other ``OSError``
+    sources (git subprocess in ``build_context``, ``state.json``
+    atomic write, snapshot cleanup) propagate as the real failures
+    they are, and get persisted normally because the audit log itself
+    is still writable.
+
+    See ADR-002 §Consequences and the audit follow-up that distinguished
+    this from a blanket ``OSError`` catch.
+    """
+
+
+# ---------------------------------------------------------------------------
 # Outcome
 # ---------------------------------------------------------------------------
 
@@ -198,6 +219,7 @@ def _run_loop(
 
     iteration = 0
     started_emitted = False
+    audit_failure: AuditPersistenceError | None = None
 
     try:
         while iteration < max_iterations:
@@ -382,21 +404,97 @@ def _run_loop(
             # Loop fell through max_iterations without a terminal break.
             # By contract three back-to-back fails escalate to needs_human.
             final_verdict = "needs_human"
+    except AuditPersistenceError as exc:
+        # audit_log.append itself failed. Per ADR-002 §Consequences and
+        # the audit finding #5 fixup: we do NOT try to record the failure
+        # in the broken audit.jsonl sink. ErrorEvent goes to the bus only;
+        # renderers / future listeners still see what happened.
+        #
+        # NB: this catch is narrow on AuditPersistenceError (subclass of
+        # OSError) precisely so unrelated OSErrors — from build_context's
+        # git subprocess, state.json atomic write, snapshot cleanup —
+        # propagate as their own failures and reach the broader handler
+        # below, which CAN persist them normally because audit is fine.
+        audit_failure = exc
+        logger.exception("audit_log persistence failure")
+        final_verdict = "error"
+        _emit_bus_only(
+            bus,
+            ErrorEvent(
+                run_uuid=run_uuid,
+                error_type="audit_persistence",
+                message=str(exc),
+            ),
+        )
+    except OSError as exc:
+        # Operational failure that is NOT audit-side: git subprocess in
+        # build_context, state.json write, snapshot cleanup, etc. Audit
+        # log is still writable, so we persist the real ErrorEvent
+        # there; the loop-level final IterationCompleteEvent below also
+        # goes to audit normally.
+        logger.exception("orchestrator I/O failure (non-audit)")
+        final_verdict = "error"
+        try:
+            _emit(
+                bus,
+                audit_log,
+                ErrorEvent(
+                    run_uuid=run_uuid,
+                    error_type="orchestrator_io",
+                    message=str(exc),
+                ),
+            )
+        except AuditPersistenceError as audit_exc:
+            # Defensive: in the unlikely event that the persistence
+            # layer also fails right after the operational failure,
+            # demote to bus-only to avoid losing both signals.
+            audit_failure = audit_exc
+            logger.exception(
+                "audit_log persistence failure during error reporting"
+            )
+            _emit_bus_only(
+                bus,
+                ErrorEvent(
+                    run_uuid=run_uuid,
+                    error_type="audit_persistence",
+                    message=str(audit_exc),
+                ),
+            )
     finally:
-        clear_iteration(state_path)
+        # Clear in-flight state regardless of how we exited. Suppress
+        # secondary I/O errors from clear_iteration itself if the disk
+        # is wedged — primary outcome is already error.
+        try:
+            clear_iteration(state_path)
+        except OSError:
+            logger.exception("clear_iteration failed; state may be stale")
 
-    _emit(
-        bus,
-        audit_log,
-        IterationCompleteEvent(
-            run_uuid=run_uuid,
-            iteration_id=f"{run_uuid}-{iterations_used}",
-            final_verdict=_coerce_event_verdict(final_verdict),
-            iterations_used=iterations_used,
-            total_cost_usd=0.0,
-            duration_sec=time.monotonic() - started_wall,
-        ),
+    # Final IterationCompleteEvent. If the audit log is already known
+    # broken, do not retry it through audit_log — bus only.
+    final_event = IterationCompleteEvent(
+        run_uuid=run_uuid,
+        iteration_id=f"{run_uuid}-{iterations_used}",
+        final_verdict=_coerce_event_verdict(final_verdict),
+        iterations_used=iterations_used,
+        total_cost_usd=0.0,
+        duration_sec=time.monotonic() - started_wall,
     )
+    if audit_failure is not None:
+        _emit_bus_only(bus, final_event)
+    else:
+        try:
+            _emit(bus, audit_log, final_event)
+        except AuditPersistenceError as exc:
+            logger.exception("final IterationCompleteEvent persistence failure")
+            final_verdict = "error"
+            _emit_bus_only(
+                bus,
+                ErrorEvent(
+                    run_uuid=run_uuid,
+                    error_type="audit_persistence",
+                    message=str(exc),
+                ),
+            )
 
     return OrchestratorOutcome(
         run_uuid=run_uuid,
@@ -412,16 +510,35 @@ def _run_loop(
 
 
 def _emit(bus: EventBus, audit_log: AuditLog, event: CCBridgeEvent) -> None:
-    """Append to audit.jsonl FIRST, then publish to the bus.
+    """Atomically persist event to audit.jsonl, then publish to the bus.
 
-    The append is the one that costs nothing if the renderer crashes
-    later — and we never want to lose a verdict event because a
-    listener raised.
+    Raises:
+        AuditPersistenceError: if audit_log.append fails. Wraps the
+            underlying OSError so :func:`_run_loop` can catch
+            persistence failures specifically without swallowing
+            unrelated ``OSError`` from other operations in the loop
+            body. ADR-002 §Consequences.
+
+    bus.emit is best-effort: listener exceptions are caught inside
+    EventBus and logged, never propagated.
     """
     try:
         audit_log.append(event)
-    except Exception:
-        logger.exception("audit_log append failed for %s", type(event).__name__)
+    except OSError as exc:
+        raise AuditPersistenceError(
+            f"audit_log.append failed for {type(event).__name__}: {exc}"
+        ) from exc
+    bus.emit(event)
+
+
+def _emit_bus_only(bus: EventBus, event: CCBridgeEvent) -> None:
+    """Publish to bus without touching the audit log.
+
+    Used after an audit_log persistence failure: we cannot record the
+    failure in the broken sink, but renderers / future listeners still
+    deserve to know about it. Per ADR-002 §Consequences and audit
+    finding #5 fixup.
+    """
     bus.emit(event)
 
 
@@ -492,4 +609,4 @@ def _validate_codex_result(
 _ = replace
 
 
-__all__ = ("OrchestratorOutcome", "run_audit")
+__all__ = ("AuditPersistenceError", "OrchestratorOutcome", "run_audit")

@@ -1,10 +1,12 @@
 """CCBridge events for the EventBus.
 
-All renderers (rich, jsonl, future Wave/MCP) consume the same stream of
+Renderers (rich, silent, future Wave/MCP) consume the same stream of
 typed events. This module defines the event vocabulary; orchestrator
-emits, renderers subscribe.
+emits, renderers subscribe. Persistence in ``audit.jsonl`` is handled
+by the orchestrator itself (see ADR-002), not by a renderer.
 
-See ARCHITECTURE.md §2.9 for the design rationale.
+See ARCHITECTURE.md §2.9 for the design rationale and ADR-002 for the
+ownership decision.
 """
 
 from __future__ import annotations

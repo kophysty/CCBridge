@@ -46,6 +46,22 @@ def _stub_run(
     return calls
 
 
+@pytest.fixture(autouse=True)
+def _resolve_executable_passthrough(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default: resolve_executable is identity for bare names.
+
+    Real shutil.which is not available in CI test envs (no claude
+    installed). Tests that exercise the resolver explicitly override
+    via their own monkeypatch.setattr.
+    """
+    monkeypatch.setattr(
+        "ccbridge.runners.claude_runner.resolve_executable",
+        lambda name: name,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------
@@ -76,17 +92,22 @@ def test_run_claude_returns_parsed_json_on_success(
     assert result.stdout == json.dumps(payload)
 
 
-def test_run_claude_passes_prompt_and_format_flags(
+def test_run_claude_argv_skeleton_and_no_prompt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """argv skeleton: claude --print --output-format json. Prompt MUST
+    NOT appear in argv (audit finding #2 — Windows cmdline size limit
+    + OWASP A03 defense-in-depth). Prompt arrives via stdin instead.
+    """
+
     def handler(
         argv: list[str], kwargs: dict[str, Any]
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(argv, 0, stdout='{"k":1}', stderr="")
 
     calls = _stub_run(monkeypatch, handler)
-
-    run_claude(prompt="ping", cwd=tmp_path)
+    secret_marker = "DISTINCTIVE_PROMPT_MARKER_J42"
+    run_claude(prompt=secret_marker, cwd=tmp_path)
 
     assert len(calls) == 1
     argv, kwargs = calls[0]
@@ -95,9 +116,11 @@ def test_run_claude_passes_prompt_and_format_flags(
     assert "--output-format" in argv
     fmt_idx = argv.index("--output-format")
     assert argv[fmt_idx + 1] == "json"
-    # Prompt is passed as positional, not on stdin.
-    assert "ping" in argv
-    # cwd must be honoured so claude sees the right project.
+
+    assert secret_marker not in " ".join(argv), (
+        f"prompt leaked into argv: {argv}"
+    )
+    assert kwargs.get("input") == secret_marker
     assert kwargs.get("cwd") == tmp_path
 
 
@@ -188,19 +211,48 @@ def test_run_claude_raises_on_invalid_json_stdout(
 def test_run_claude_raises_on_executable_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    def handler(
-        argv: list[str], kwargs: dict[str, Any]
-    ) -> subprocess.CompletedProcess[str]:
-        raise FileNotFoundError("claude not found")
-
-    _stub_run(monkeypatch, handler)
+    """If ``claude`` is not in PATH at all, resolve_executable raises and
+    we surface it as ClaudeRunnerError before subprocess is invoked.
+    """
+    monkeypatch.setattr(
+        "ccbridge.runners.claude_runner.resolve_executable",
+        lambda name: (_ for _ in ()).throw(
+            FileNotFoundError(f"executable {name!r} not in PATH")
+        ),
+    )
 
     with pytest.raises(ClaudeRunnerError) as exc_info:
         run_claude(prompt="x", cwd=tmp_path)
 
-    assert "not found" in str(exc_info.value).lower() or "claude" in str(
-        exc_info.value
-    ).lower()
+    msg = str(exc_info.value).lower()
+    assert "not found" in msg or "not in path" in msg or "claude" in msg
+
+
+def test_run_claude_uses_resolved_executable_in_argv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression for Windows: ``claude`` is typically installed as
+    ``claude.cmd`` via npm. resolve_executable handles PATHEXT —
+    argv[0] must be the resolved full path.
+    """
+    fake_resolved = "/fake/path/to/claude.cmd"
+    monkeypatch.setattr(
+        "ccbridge.runners.claude_runner.resolve_executable",
+        lambda name: fake_resolved if name == "claude" else name,
+    )
+
+    def handler(
+        argv: list[str], kwargs: dict[str, Any]
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 0, stdout='{"x":1}', stderr="")
+
+    calls = _stub_run(monkeypatch, handler)
+    run_claude(prompt="x", cwd=tmp_path)
+
+    argv, _ = calls[0]
+    assert argv[0] == fake_resolved, (
+        f"argv[0] should be the resolved path, got: {argv[0]!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -483,3 +483,179 @@ def test_dataclass_replace_is_available_for_future_tests() -> None:
     s = State()
     s2 = replace(s)
     assert s == s2
+
+
+# ---------------------------------------------------------------------------
+# Audit log persistence failure (ADR-002, audit finding #5)
+# ---------------------------------------------------------------------------
+
+
+def test_audit_log_append_failure_yields_error_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-002 + audit finding #5: if audit.jsonl write fails (disk full,
+    permission denied, etc.), orchestrator transitions to error path:
+
+    * outcome.final_verdict == "error"
+    * ErrorEvent emitted ONLY to EventBus (we observe it via listener)
+    * NO attempt to write ErrorEvent to the broken audit.jsonl
+    * state.json cleared
+    * lockfile released
+    """
+    repo = _make_repo_with_diff(tmp_path)
+    _stub_codex(monkeypatch, [_verdict_payload("pass")])
+
+    # Make every audit_log.append raise — simulates disk full / I/O error.
+    def boom(self: AuditLog, event: CCBridgeEvent) -> None:
+        raise OSError("simulated audit append failure")
+
+    monkeypatch.setattr(
+        "ccbridge.core.audit_log.AuditLog.append", boom
+    )
+
+    bus = EventBus()
+    captured = _record_events(bus)
+
+    outcome = run_audit(
+        project_dir=repo,
+        ccbridge_dir=repo / ".ccbridge",
+        bus=bus,
+        max_iterations=3,
+    )
+
+    # Outcome reflects the failure.
+    assert outcome.final_verdict == "error"
+
+    # ErrorEvent reached the bus.
+    error_events = [e for e in captured if isinstance(e, ErrorEvent)]
+    assert error_events, "expected ErrorEvent on bus, got none"
+    assert any(
+        "audit" in e.error_type.lower() or "persistence" in e.error_type.lower()
+        for e in error_events
+    ), f"ErrorEvent error_type should mention audit/persistence: {[e.error_type for e in error_events]}"
+
+    # Lock released (CCBridgeLock context manager handles it).
+    assert not (repo / ".ccbridge" / "lockfile").exists()
+
+    # NB: audit.jsonl may not exist OR may be empty — point is, the
+    # orchestrator did not try to "log the failure to the broken
+    # sink". If file exists, it must contain ZERO ErrorEvent records
+    # (because every append boomed).
+    audit_path = repo / ".ccbridge" / "audit.jsonl"
+    if audit_path.exists():
+        # Whatever made it through must NOT include the post-failure
+        # ErrorEvent — that is bus-only.
+        log = AuditLog(audit_path)
+        events_on_disk = list(log.read_all())
+        # Since boom raises on every append, no events should be on disk.
+        assert events_on_disk == []
+
+
+def test_audit_log_append_failure_clears_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """state.json must be cleared in the finally block even when audit
+    append fails — recovery model must not leave stale current_iteration.
+    """
+    repo = _make_repo_with_diff(tmp_path)
+    _stub_codex(monkeypatch, [_verdict_payload("pass")])
+
+    def boom(self: AuditLog, event: CCBridgeEvent) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("ccbridge.core.audit_log.AuditLog.append", boom)
+
+    bus = EventBus()
+    run_audit(
+        project_dir=repo,
+        ccbridge_dir=repo / ".ccbridge",
+        bus=bus,
+        max_iterations=3,
+    )
+
+    state_path = repo / ".ccbridge" / "state.json"
+    if state_path.exists():
+        state = load_state(state_path)
+        assert state is not None
+        assert state.current_iteration is None, (
+            "state.current_iteration must be cleared on failure path"
+        )
+
+
+def test_non_audit_oserror_is_not_misclassified_as_audit_persistence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Audit finding follow-up: _run_loop used to catch *any* OSError
+    as audit_persistence, including OSErrors from build_context's git
+    subprocess / file I/O. That was misleading — audit was actually
+    fine, the real failure was elsewhere.
+
+    After the fix:
+    * AuditPersistenceError is the only thing that triggers the
+      "audit broken" path (bus-only ErrorEvent).
+    * Other OSErrors (e.g. from build_context) are propagated normally
+      and the audit log still receives an ErrorEvent describing the
+      real failure.
+    """
+    repo = _make_repo_with_diff(tmp_path)
+
+    # Make build_context raise OSError (simulates git subprocess
+    # failure or snapshot I/O issue).
+    def boom_build(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("git subprocess died")
+
+    monkeypatch.setattr(
+        "ccbridge.core.orchestrator.build_context", boom_build
+    )
+
+    bus = EventBus()
+    captured = _record_events(bus)
+
+    outcome = run_audit(
+        project_dir=repo,
+        ccbridge_dir=repo / ".ccbridge",
+        bus=bus,
+        max_iterations=3,
+    )
+
+    assert outcome.final_verdict == "error"
+
+    # Audit log should be writable and should contain an ErrorEvent
+    # describing the REAL failure — NOT misclassified as audit_persistence.
+    log = AuditLog(repo / ".ccbridge" / "audit.jsonl")
+    persisted_errors = [
+        e for e in log.read_all() if isinstance(e, ErrorEvent)
+    ]
+    assert persisted_errors, (
+        "audit.jsonl was writable but ErrorEvent not persisted there"
+    )
+    audit_persist_misclass = [
+        e
+        for e in persisted_errors
+        if "audit_persistence" in e.error_type.lower()
+    ]
+    assert not audit_persist_misclass, (
+        "non-audit OSError must not be classified as audit_persistence: "
+        f"{[(e.error_type, e.message) for e in persisted_errors]}"
+    )
+
+    # Bus saw the same event (renderers also notified).
+    bus_errors = [e for e in captured if isinstance(e, ErrorEvent)]
+    assert bus_errors
+
+
+def test_audit_persistence_error_class_is_distinct(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The new AuditPersistenceError must subclass OSError (so external
+    callers wrapping run_audit in `except OSError:` still catch it),
+    but must be a *distinct* class so _run_loop can narrow the catch.
+    """
+    from ccbridge.core.orchestrator import AuditPersistenceError
+
+    assert issubclass(AuditPersistenceError, OSError), (
+        "AuditPersistenceError should inherit OSError for compatibility"
+    )
+    # And it must NOT be == OSError (otherwise the narrow catch achieves
+    # nothing).
+    assert AuditPersistenceError is not OSError

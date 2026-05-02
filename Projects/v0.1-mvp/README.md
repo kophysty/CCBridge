@@ -76,8 +76,9 @@ MVP peer-review pipeline между Claude Code и Codex CLI:
   src/ccbridge/transports/audit_watch.py Live tail второго терминала
   src/ccbridge/cli.py                    Click-based CLI: init/audit/status/uninstall
   src/ccbridge/renderers/rich_renderer.py
-  src/ccbridge/renderers/jsonl_renderer.py
   src/ccbridge/renderers/silent_renderer.py
+  # NB: jsonl_renderer не существует — audit.jsonl пишет
+  #     orchestrator. См. ADR-002.
 ```
 
 **Acceptance:**
