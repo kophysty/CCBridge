@@ -31,22 +31,36 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-import click
-from rich.console import Console
-from rich.table import Table
+# Force stdout/stderr to UTF-8 BEFORE rich/click are imported. Default
+# Windows console encoding is cp1251 / cp1252 / whatever the locale
+# dictates. ``ccbridge`` outputs Unicode (rich glyphs ↔ → ✻ plus
+# cyrillic in prompts). Without this, ``ccbridge --help`` crashes on
+# Russian Windows because Click's help text contains ``↔``.
+#
+# Best-effort: if either stream is non-reconfigurable (rare; some
+# shell redirects), silently skip.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
 
-from ccbridge.core.audit_log import AuditLog
-from ccbridge.core.event_bus import EventBus
-from ccbridge.core.events import (
+import click  # noqa: E402  — must come after stdio reconfigure
+from rich.console import Console  # noqa: E402
+from rich.table import Table  # noqa: E402
+
+from ccbridge.core.audit_log import AuditLog  # noqa: E402
+from ccbridge.core.event_bus import EventBus  # noqa: E402
+from ccbridge.core.events import (  # noqa: E402
     CCBridgeEvent,
     IterationCompleteEvent,
     VerdictEvent,
 )
-from ccbridge.core.lockfile import LockBusyError, LockHolder
-from ccbridge.core.orchestrator import OrchestratorOutcome, run_audit
-from ccbridge.renderers.rich_renderer import RichRenderer
-from ccbridge.transports.audit_watch import watch_audit_log
-from ccbridge.transports.stop_hook import stop_hook_main
+from ccbridge.core.lockfile import LockBusyError, LockHolder  # noqa: E402
+from ccbridge.core.orchestrator import OrchestratorOutcome, run_audit  # noqa: E402
+from ccbridge.renderers.rich_renderer import RichRenderer  # noqa: E402
+from ccbridge.transports.audit_watch import watch_audit_log  # noqa: E402
+from ccbridge.transports.stop_hook import stop_hook_main  # noqa: E402
 
 CCBRIDGE_DIR_NAME = ".ccbridge"
 
