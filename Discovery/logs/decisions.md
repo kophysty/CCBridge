@@ -25,6 +25,41 @@
 
 ---
 
+### [2026-05-03] PR2b аудит — разделение фиксов на 2 этапа + skip-review
+
+**Was:** PR2b code-complete (273 tests passed, ruff/mypy clean) ушёл
+на повторный аудит. Аудитор нашёл 4 findings (3 major + 1 minor) и
+параллельно был выполнен Codex CLI survey по запросу пользователя.
+Накопилось 3 пакета изменений: audit fixes, codex survey integration,
+reason content improvement.
+
+**Now:** Разделяем работу на 2 этапа в одной ветке pr2b/transports-cli:
+
+- **PR2c-этап-1 (~75 мин):** все 4 audit findings + новая фича
+  skip-review (CCBridge не запускает аудит для turn'ов, помеченных
+  как "не аудировать"). После — повторный короткий аудит.
+- **PR2c-этап-2 (~45 мин):** codex survey integration
+  (--output-last-message primary, skills section в system prompt,
+  binary-search caveat, native retries учёт) + reason improvement
+  Path A (summary + severity counts в decision:block).
+
+**Why:** Меньше риска что я внесу скрытую регрессию большим patch'ем.
+Аудитор может проверить fixes отдельно от features. Skip-review
+запрошен пользователем для мелких правок где аудит overkill — это
+маленькое и логически связано с config wiring (по сути ещё один
+config knob).
+
+**Impact:**
+- Не мерджим PR2b → main до завершения этапа 1 + повторного аудита.
+- PR3 (templates / Layer 2) сдвигается ещё на ~120 мин работы.
+- В аудит-журнал (Discovery/logs/2026-05-03-pr2b-audit-findings.md)
+  залогированы все 4 findings + ответ Codex CLI survey, со ссылками
+  на конкретные line numbers.
+- skip-review shape ещё обсуждается с пользователем (CLI flag vs
+  prompt prefix vs settings option).
+
+---
+
 ### [2026-05-02] audit.jsonl ownership = orchestrator (Variant A)
 
 **Was:** В PR2a orchestrator сам append'ит события в `audit.jsonl`
