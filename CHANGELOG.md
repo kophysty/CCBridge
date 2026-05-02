@@ -38,6 +38,25 @@
 
 ### Added (Unreleased)
 
+- 2026-05-02 — **PR2a code-complete** на ветке `pr2a/orchestrator-
+  runners`. 4 модуля + 47 интеграционных тестов:
+  - `runners/claude_runner.py` (98% cov, 10 тестов) — subprocess
+    обёртка `claude --print --output-format json`, structured error
+    on every failure path.
+  - `runners/codex_runner.py` (91% cov, 25 тестов) — subprocess
+    `codex exec --json`, lenient JSON parse (markdown fences +
+    walk-the-braces fallback), retry с backoff на 429 / Retry-After,
+    1 retry на unparseable JSON. Закрывает AC-4, AC-19.
+  - `core/context_builder.py` (95% cov, 12 тестов) — git stash
+    create snapshot + pre-flight (empty/binary/too-large) +
+    промпт-сборка (rules → cache_hit hash; recent audits filter
+    по run_uuid; system prompt). Закрывает AC-14, AC-18, AC-20.
+  - `core/orchestrator.py` (92% cov, 10 тестов) — main loop с
+    recovery model: lockfile → for iter in 1..N → build_context →
+    run_codex → Verdict.model_validate → validate_semantics →
+    audit_log.append → save_state → release lock (always).
+    Закрывает AC-3, AC-9, AC-11, AC-12, AC-18, частично AC-21.
+  Метрики: 164 теста, coverage 95%, ruff clean, mypy strict ok.
 - 2026-05-02 — `Projects/v0.1-mvp/PR2-plan.md` — детальный план PR2 с
   декомпозицией PR2a (runners + context_builder + orchestrator) /
   PR2b (renderers + transports + cli), per-модуль коммитами, AC-маппингом
