@@ -25,6 +25,42 @@
 
 ---
 
+### [2026-05-02] audit.jsonl ownership = orchestrator (Variant A)
+
+**Was:** В PR2a orchestrator сам append'ит события в `audit.jsonl`
+перед `bus.emit`. PR2-plan.md §PR2b планировал `JsonlRenderer` как
+listener, который тоже пишет в `audit.jsonl`. Это два writer'а на
+один файл — либо дубли, либо размытая ответственность. Conflict
+найден в аудите PR2a.
+
+**Now:** Variant A: orchestrator владеет `audit.jsonl` append'ами,
+EventBus только UI/broadcast канал, `JsonlRenderer` как класс
+не реализуется в v0.1. Зафиксировано в `ADR/ADR-002-audit-jsonl-
+ownership-orchestrator.md` (Accepted).
+
+**Why:** ARCHITECTURE.md §2.4 прямо называет audit.jsonl primary
+source of truth. Primary не может зависеть от lossy fire-and-forget
+шины. Если bus.emit в JsonlRenderer крашнется — Codex-токены
+потрачены, история пуста, контракт §2.4 нарушен. Variant A
+эту проблему не имеет: один writer, явный failure path
+(см. failure handling ниже). Trade-off — orchestrator знает про
+файловый persistence — мнимый, потому что он уже знает про
+state.json и lockfile (тоже persistence).
+
+**Impact:**
+- ADR-002 создан, ADR/README.md реестр обновлён.
+- `Projects/v0.1-mvp/PR2-plan.md` §PR2b: JsonlRenderer удалён из
+  списка модулей, добавлено примечание про ownership.
+- ARCHITECTURE.md §2.9: уточнение что renderer'ы НЕ пишут в
+  audit.jsonl (только UI broadcast).
+- Failure handling в `orchestrator._emit`: если `audit_log.append`
+  упал → ErrorEvent ТОЛЬКО на bus (НЕ в сломанный audit.jsonl),
+  outcome.final_verdict="error", state очищен, lock освобождён.
+  Это поправка к моему первоначальному предложению (где я
+  обещал записать ErrorEvent в тот же сломанный sink — нельзя).
+
+---
+
 ### [2026-04-28] Создан проект CCBridge
 
 **Was:** Соло-разработчик копипастил вручную diff из Claude Code в

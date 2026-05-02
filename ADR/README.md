@@ -69,6 +69,8 @@ Rulebook R-NNN, другие ADR, ссылка на обсуждение в deci
   ───────  ────────────  ──────────  ─────────────────────────────────────
   ADR-001  2026-04-28    Accepted    Python CLI вместо bash, Node.js или
                                       сразу MCP server
+  ADR-002  2026-05-02    Accepted    audit.jsonl writes owned by
+                                      orchestrator, not by a renderer
 ```
 
 ---
