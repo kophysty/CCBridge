@@ -7,7 +7,7 @@
 > следующее, что отложено, что уже сделано. Ссылки на все плановые
 > документы.
 
-**Обновление:** 2026-05-02 (PR1 pushed, PR2a started)
+**Обновление:** 2026-05-02 (PR2a merged & pushed, ожидает аудита)
 **Правило ведения:** [R-007 — planning discipline](Rulebook/R-007-workflow-planning-discipline.md)
 
 ---
@@ -36,18 +36,17 @@
 ```
   Версия     Название                              Plan / Статус
   ─────────  ────────────────────────────────────  ─────────────────────────────
-  v0.1-PR2a  Runners + context_builder +            Plan: Projects/v0.1-mvp/
-   (Active)  orchestrator + integration tests      PR2-plan.md (детальный)
+  Audit      Аудит PR2a перед стартом PR2b          Plan: Discovery/logs/
+   (Active)   (claude_runner, codex_runner,          2026-05-02-handoff-pr2a-
+              context_builder, orchestrator)         audit.md
 
-                                                   Branch: pr2a/orchestrator-
-                                                    runners (от main b1edc23)
+                                                   Trigger: ✅ PR2a merged
+                                                    в main (a740890), pushed
 
-                                                   Trigger: ✅ PR1 pushed,
-                                                    ОК пользователя на старт
-
-                                                   Acceptance: AC-3, AC-4,
-                                                   AC-14, AC-18, AC-19, AC-20
-                                                   закрыты. Pytest зелёный.
+                                                   Acceptance: пользователь
+                                                   подтвердил готовность
+                                                   двигаться к PR2b или
+                                                   указал правки.
 
   Слой 1     Методологическая структура            Plan: вытащено из Oil_auto
    (Active)   (Rulebook + ROADMAP + Discovery       — анализ в Discovery/logs/
@@ -72,7 +71,7 @@
   v0.1-PR2b  Renderers + transports + cli          Plan: Projects/v0.1-mvp/
               + integration + e2e tests             PR2-plan.md §PR2b
 
-                                                   Trigger: PR2a merged в main
+                                                   Trigger: ✅ Audit PR2a OK
                                                    + ОК пользователя
 
   v0.1-PR3   Templates + ccbridge init             Plan: будет написан
@@ -147,5 +146,17 @@
                              Commit: b1edc23 на main → pushed в
                              github.com/kophysty/CCBridge.
 
-  v0.1.0     (TBD)           Финальный релиз MVP — после PR2 + PR3.
+  v0.1-PR2a   2026-05-02    Runners + context_builder + orchestrator
+   (push)                    + 47 integration-тестов. Ядро peer-review
+                             цикла работает: lockfile → context build
+                             (git stash snapshot) → run_codex (retry/
+                             backoff/lenient JSON) → Verdict + semantic
+                             validation → audit.jsonl → state.json →
+                             release lock. 164 теста total, coverage
+                             95%, ruff clean, mypy strict ok.
+                             Закрыто: AC-3, AC-4, AC-9, AC-11, AC-12,
+                             AC-14, AC-18, AC-19, AC-20, частично
+                             AC-21. Merge a740890 на main → pushed.
+
+  v0.1.0     (TBD)           Финальный релиз MVP — после PR2b + PR3.
 ```

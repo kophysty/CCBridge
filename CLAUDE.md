@@ -11,7 +11,9 @@ with code in this repository.
   `Discovery/logs/*-handoff-*.md` или `*-checkpoint-*.md` (по mtime)
   если есть. Это точка синхронизации с предыдущими сессиями.
   **Текущий актуальный handoff:**
-  [`Discovery/logs/2026-05-02-handoff-pr1-to-pr2.md`](Discovery/logs/2026-05-02-handoff-pr1-to-pr2.md).
+  [`Discovery/logs/2026-05-02-handoff-pr2a-audit.md`](Discovery/logs/2026-05-02-handoff-pr2a-audit.md)
+  (после PR2a merge, ожидает аудита).
+  Предыдущий: [`2026-05-02-handoff-pr1-to-pr2.md`](Discovery/logs/2026-05-02-handoff-pr1-to-pr2.md).
 - **⭐ [`ROADMAP.md`](ROADMAP.md)** — **ВТОРОЕ ЧТО ЧИТАТЬ.** Единый
   реестр планов и версий: что делаем сейчас (Active), что следующее
   (Queued), что отложено (Pending), что уже в production (Shipped).
@@ -100,13 +102,14 @@ with code in this repository.
 **CCBridge** — Python CLI tool для автоматизации peer-review между
 Claude Code CLI и OpenAI Codex CLI.
 
-**Текущая версия:** v0.0.3-draft (pre-implementation)
-**Текущая фаза:** PR1 — core modules
+**Текущая версия:** v0.0.3-draft (PR1+PR2a in main)
+**Текущая фаза:** Audit checkpoint после PR2a → PR2b (transports + cli)
 
 **Архитектура:** [`ARCHITECTURE.md`](ARCHITECTURE.md)
 
-**Status: ACTIVE** — методологическая структура развёрнута, идёт
-реализация core модулей (4/8 готовы).
+**Status: ACTIVE** — PR1 (core modules) и PR2a (runners +
+context_builder + orchestrator) в main, push в GitHub. Ожидает аудита
+перед стартом PR2b.
 
 ---
 
@@ -115,11 +118,15 @@ Claude Code CLI и OpenAI Codex CLI.
 См. [`ROADMAP.md`](ROADMAP.md) — секция Active.
 
 ```
-  v0.1-PR1   Core modules                          🟡 4/8 готовы
-              (verdict, events, event_bus,           events.py + event_bus.py
-              lockfile, audit_log, state,            + verdict.py + 40 тестов.
-              migrations, config) + unit tests       Trigger: ✅ ОК аудита.
-                                                     Acceptance: AC-1..AC-21.
+  Audit       Аудит PR2a перед стартом PR2b          🚧 Active
+   (2026-     (claude_runner, codex_runner,           Plan: Discovery/logs/
+    05-02)     context_builder, orchestrator)         2026-05-02-handoff-
+                                                       pr2a-audit.md
+
+                                                      Trigger: ✅ PR2a merged
+                                                       (a740890), pushed.
+                                                      Acceptance: ОК на
+                                                       старт PR2b.
 ```
 
 ---

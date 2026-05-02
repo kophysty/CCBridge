@@ -86,10 +86,12 @@ desktop.ini
 # ──────────────────────────────────────────────────────────────────
 # Logs / temp
 # ──────────────────────────────────────────────────────────────────
+# NB: paths are anchored to repo root so we don't accidentally hide
+# Discovery/logs/ (which IS tracked — it's our session narrative).
 *.log
-logs/
-tmp/
-temp/
+/logs/
+/tmp/
+/temp/
 
 # ──────────────────────────────────────────────────────────────────
 # Output (READ-ONLY artefacts)
