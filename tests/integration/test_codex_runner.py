@@ -251,7 +251,7 @@ class TestExtractJsonPayload:
 
     def test_unicode_preserved(self) -> None:
         raw = '{"summary":"тест с кириллицей"}'  # noqa: RUF001
-        assert extract_json_payload(raw) == {  # noqa: RUF001
+        assert extract_json_payload(raw) == {
             "summary": "тест с кириллицей",  # noqa: RUF001
         }
 
@@ -299,8 +299,11 @@ def test_run_codex_handles_agent_message_with_markdown_fence(
     """Codex's own agent_message.text MAY wrap the verdict in markdown
     fences (the LLM sometimes does this despite the system prompt).
     The lenient extract_json_payload deals with it.
+
+    NB: _event_stream() does json.dumps on its argument, so we pass
+    the raw fenced text — the helper handles the JSON-escaping.
     """
-    fenced_verdict = '```json\\n{\\"verdict\\":\\"fail\\",\\"schema_version\\":1}\\n```'
+    fenced_verdict = '```json\n{"verdict":"fail","schema_version":1}\n```'
     stream = _event_stream(fenced_verdict)
 
     def handler(
