@@ -198,6 +198,7 @@ def _run_loop(
 
     iteration = 0
     started_emitted = False
+    audit_failure: OSError | None = None
 
     try:
         while iteration < max_iterations:
@@ -382,21 +383,58 @@ def _run_loop(
             # Loop fell through max_iterations without a terminal break.
             # By contract three back-to-back fails escalate to needs_human.
             final_verdict = "needs_human"
+    except OSError as exc:
+        # audit_log.append failed somewhere in the loop. Per ADR-002
+        # §Consequences (and audit finding #5 fixup): we do NOT try to
+        # record the failure in the broken audit.jsonl sink. ErrorEvent
+        # goes to the bus only; renderers / future listeners still see
+        # what happened.
+        audit_failure = exc
+        logger.exception("audit_log persistence failure")
+        final_verdict = "error"
+        _emit_bus_only(
+            bus,
+            ErrorEvent(
+                run_uuid=run_uuid,
+                error_type="audit_persistence",
+                message=f"audit.jsonl append failed: {exc}",
+            ),
+        )
     finally:
-        clear_iteration(state_path)
+        # Clear in-flight state regardless of how we exited. Suppress
+        # secondary I/O errors from clear_iteration itself if the disk
+        # is wedged — primary outcome is already error.
+        try:
+            clear_iteration(state_path)
+        except OSError:
+            logger.exception("clear_iteration failed; state may be stale")
 
-    _emit(
-        bus,
-        audit_log,
-        IterationCompleteEvent(
-            run_uuid=run_uuid,
-            iteration_id=f"{run_uuid}-{iterations_used}",
-            final_verdict=_coerce_event_verdict(final_verdict),
-            iterations_used=iterations_used,
-            total_cost_usd=0.0,
-            duration_sec=time.monotonic() - started_wall,
-        ),
+    # Final IterationCompleteEvent. If the audit log is already known
+    # broken, do not retry it through audit_log — bus only.
+    final_event = IterationCompleteEvent(
+        run_uuid=run_uuid,
+        iteration_id=f"{run_uuid}-{iterations_used}",
+        final_verdict=_coerce_event_verdict(final_verdict),
+        iterations_used=iterations_used,
+        total_cost_usd=0.0,
+        duration_sec=time.monotonic() - started_wall,
     )
+    if audit_failure is not None:
+        _emit_bus_only(bus, final_event)
+    else:
+        try:
+            _emit(bus, audit_log, final_event)
+        except OSError as exc:
+            logger.exception("final IterationCompleteEvent persistence failure")
+            final_verdict = "error"
+            _emit_bus_only(
+                bus,
+                ErrorEvent(
+                    run_uuid=run_uuid,
+                    error_type="audit_persistence",
+                    message=f"audit.jsonl append failed: {exc}",
+                ),
+            )
 
     return OrchestratorOutcome(
         run_uuid=run_uuid,
@@ -412,16 +450,30 @@ def _run_loop(
 
 
 def _emit(bus: EventBus, audit_log: AuditLog, event: CCBridgeEvent) -> None:
-    """Append to audit.jsonl FIRST, then publish to the bus.
+    """Atomically persist event to audit.jsonl, then publish to the bus.
 
-    The append is the one that costs nothing if the renderer crashes
-    later — and we never want to lose a verdict event because a
-    listener raised.
+    Raises:
+        OSError: if audit_log.append fails. The caller must transition
+            to the error path (see ADR-002 §Consequences). We deliberately
+            do NOT swallow the failure — audit.jsonl is the primary
+            source of truth, and silently dropping events would violate
+            the §2.4 contract.
+
+    bus.emit is best-effort: listener exceptions are caught inside
+    EventBus and logged, never propagated.
     """
-    try:
-        audit_log.append(event)
-    except Exception:
-        logger.exception("audit_log append failed for %s", type(event).__name__)
+    audit_log.append(event)
+    bus.emit(event)
+
+
+def _emit_bus_only(bus: EventBus, event: CCBridgeEvent) -> None:
+    """Publish to bus without touching the audit log.
+
+    Used after an audit_log persistence failure: we cannot record the
+    failure in the broken sink, but renderers / future listeners still
+    deserve to know about it. Per ADR-002 §Consequences and audit
+    finding #5 fixup.
+    """
     bus.emit(event)
 
 

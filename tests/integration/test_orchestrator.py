@@ -483,3 +483,100 @@ def test_dataclass_replace_is_available_for_future_tests() -> None:
     s = State()
     s2 = replace(s)
     assert s == s2
+
+
+# ---------------------------------------------------------------------------
+# Audit log persistence failure (ADR-002, audit finding #5)
+# ---------------------------------------------------------------------------
+
+
+def test_audit_log_append_failure_yields_error_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-002 + audit finding #5: if audit.jsonl write fails (disk full,
+    permission denied, etc.), orchestrator transitions to error path:
+
+    * outcome.final_verdict == "error"
+    * ErrorEvent emitted ONLY to EventBus (we observe it via listener)
+    * NO attempt to write ErrorEvent to the broken audit.jsonl
+    * state.json cleared
+    * lockfile released
+    """
+    repo = _make_repo_with_diff(tmp_path)
+    _stub_codex(monkeypatch, [_verdict_payload("pass")])
+
+    # Make every audit_log.append raise — simulates disk full / I/O error.
+    def boom(self: AuditLog, event: CCBridgeEvent) -> None:
+        raise OSError("simulated audit append failure")
+
+    monkeypatch.setattr(
+        "ccbridge.core.audit_log.AuditLog.append", boom
+    )
+
+    bus = EventBus()
+    captured = _record_events(bus)
+
+    outcome = run_audit(
+        project_dir=repo,
+        ccbridge_dir=repo / ".ccbridge",
+        bus=bus,
+        max_iterations=3,
+    )
+
+    # Outcome reflects the failure.
+    assert outcome.final_verdict == "error"
+
+    # ErrorEvent reached the bus.
+    error_events = [e for e in captured if isinstance(e, ErrorEvent)]
+    assert error_events, "expected ErrorEvent on bus, got none"
+    assert any(
+        "audit" in e.error_type.lower() or "persistence" in e.error_type.lower()
+        for e in error_events
+    ), f"ErrorEvent error_type should mention audit/persistence: {[e.error_type for e in error_events]}"
+
+    # Lock released (CCBridgeLock context manager handles it).
+    assert not (repo / ".ccbridge" / "lockfile").exists()
+
+    # NB: audit.jsonl may not exist OR may be empty — point is, the
+    # orchestrator did not try to "log the failure to the broken
+    # sink". If file exists, it must contain ZERO ErrorEvent records
+    # (because every append boomed).
+    audit_path = repo / ".ccbridge" / "audit.jsonl"
+    if audit_path.exists():
+        # Whatever made it through must NOT include the post-failure
+        # ErrorEvent — that is bus-only.
+        log = AuditLog(audit_path)
+        events_on_disk = list(log.read_all())
+        # Since boom raises on every append, no events should be on disk.
+        assert events_on_disk == []
+
+
+def test_audit_log_append_failure_clears_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """state.json must be cleared in the finally block even when audit
+    append fails — recovery model must not leave stale current_iteration.
+    """
+    repo = _make_repo_with_diff(tmp_path)
+    _stub_codex(monkeypatch, [_verdict_payload("pass")])
+
+    def boom(self: AuditLog, event: CCBridgeEvent) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("ccbridge.core.audit_log.AuditLog.append", boom)
+
+    bus = EventBus()
+    run_audit(
+        project_dir=repo,
+        ccbridge_dir=repo / ".ccbridge",
+        bus=bus,
+        max_iterations=3,
+    )
+
+    state_path = repo / ".ccbridge" / "state.json"
+    if state_path.exists():
+        state = load_state(state_path)
+        assert state is not None
+        assert state.current_iteration is None, (
+            "state.current_iteration must be cleared on failure path"
+        )
