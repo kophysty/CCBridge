@@ -159,6 +159,11 @@ def run_claude(
             env=env,
             capture_output=True,
             text=True,
+            # Force UTF-8 (see codex_runner for the same fix). Locale
+            # default on Windows can be cp1251 / cp1252 which doesn't
+            # cover arrows or cyrillic in our SYSTEM_PROMPT.
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             check=False,
         )

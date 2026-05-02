@@ -333,6 +333,15 @@ def run_codex(
                 env=env,
                 capture_output=True,
                 text=True,
+                # Force UTF-8 so prompts with arrows / cyrillic / emoji
+                # don't crash on Russian Windows (locale default is
+                # cp1251 there). Live smoke caught this — caught in
+                # tests now too.
+                encoding="utf-8",
+                # Defensive: replace any malformed bytes in subprocess
+                # output rather than raising. We control prompt encode
+                # cleanly; output we can't trust to be pristine UTF-8.
+                errors="replace",
                 timeout=timeout,
                 check=False,
             )
