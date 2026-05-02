@@ -489,21 +489,41 @@ def test_json_mode_no_ansi_anywhere_in_stdout(
 # ---------------------------------------------------------------------------
 
 
-def test_init_command_exists_but_deferred() -> None:
-    """``ccbridge init`` exists in skeleton (so users get a real error,
-    not click "no such command"), but currently exits non-zero with a
-    "not implemented in 6a" message. Will be implemented in 6b.
+def test_stop_hook_subcommand_invokes_hook_main(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ccbridge stop-hook`` is the wrapper Claude Code invokes via
+    .claude/settings.json. It just delegates to stop_hook_main and
+    propagates its exit code.
     """
+    called = {"flag": False, "return_value": 0}
+
+    def fake_hook_main() -> int:
+        called["flag"] = True
+        return called["return_value"]
+
+    monkeypatch.setattr("ccbridge.cli.stop_hook_main", fake_hook_main)
+
     runner = CliRunner()
-    result = runner.invoke(cli, ["init", "/tmp/foo"])
+    result = runner.invoke(cli, ["stop-hook"])
 
-    assert result.exit_code != 0
-    assert "not implemented" in result.stderr.lower() or "6b" in result.stderr.lower()
+    assert called["flag"] is True
+    assert result.exit_code == 0
 
 
-def test_uninstall_command_exists_but_deferred() -> None:
+def test_stop_hook_subcommand_propagates_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_hook_main() -> int:
+        return 2
+
+    monkeypatch.setattr("ccbridge.cli.stop_hook_main", fake_hook_main)
+
     runner = CliRunner()
-    result = runner.invoke(cli, ["uninstall", "/tmp/foo"])
+    result = runner.invoke(cli, ["stop-hook"])
+    assert result.exit_code == 2
 
-    assert result.exit_code != 0
-    assert "not implemented" in result.stderr.lower() or "6b" in result.stderr.lower()
+
+# NB: previously had stub-deferred-to-6b tests for init/uninstall;
+# those commands are now implemented (see test_cli_init.py +
+# test_cli_uninstall.py).
