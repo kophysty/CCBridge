@@ -1,11 +1,20 @@
 """RichRenderer — terminal output for the CCBridge event stream.
 
-Used as a Stop-hook stdout renderer (and any time we want pretty CLI
-output for an audit run). Format is keyed off the event type and uses
-``rich`` for colour/structure when a tty is attached, plain text
-otherwise.
+Used by every transport that wants pretty event output. The actual
+destination (stdout vs stderr) is the caller's choice via the
+``file=`` constructor argument:
 
-Per ADR-002 this is broadcast-only: it does NOT touch ``audit.jsonl``.
+* ``transports/stop_hook`` → ``RichRenderer(file=sys.stderr)``.
+  Stdout is reserved for the decision JSON Claude Code parses on
+  exit 0; ANSI / rich output there would corrupt the parse.
+* ``cli ccbridge audit run`` → ``RichRenderer()`` (stdout default).
+  No parser downstream — terminal user reads it directly.
+* ``transports/audit_watch`` → ``RichRenderer()`` (stdout default).
+  Separate process tailing ``audit.jsonl``; not subscribed to the
+  in-process EventBus.
+
+Per ADR-002 renderers are broadcast-only: they do NOT touch
+``audit.jsonl``.
 
 We avoid ``rich.live`` for the v0.1 scope — orchestrator emits at
 human-readable cadence (started → context_built → codex_thinking →
