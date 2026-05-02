@@ -565,10 +565,65 @@ rules-cache.sha256
 """
 
 
+def _ccbridge_command_markers(subcommand: str) -> tuple[str, ...]:
+    """Substrings that identify a CCBridge-installed hook command.
+
+    We need to recognise BOTH:
+      * the new absolute-path form: ``... -m ccbridge.cli stop-hook``
+        (audit finding #3 fix, written by current ``init``)
+      * the legacy bare form: ``ccbridge stop-hook``
+        (written by pre-fix ``init`` versions; users upgrading from
+        an earlier CCBridge install may have this in their settings.json)
+
+    Without recognising legacy entries, ``init`` on a project that was
+    initialized by an old version would skip the legacy entry as
+    "not ours" and add a second one (duplication), and ``uninstall``
+    would leave the legacy entry behind.
+
+    NB: marker check is a substring match on the ``command`` field. We
+    deliberately keep the substrings precise enough not to false-match
+    a user's own hook that happens to mention "ccbridge" or "stop-hook"
+    in passing.
+    """
+    return (
+        f"ccbridge.cli {subcommand}",  # new (post-2026-05-03)
+        f"ccbridge {subcommand}",      # legacy (pre-2026-05-03)
+    )
+
+
 def _stop_hook_command_marker() -> str:
-    """Substring used to identify our hook entry in settings.json (for
-    idempotency check + uninstall removal)."""
-    return "ccbridge stop-hook"
+    """Single substring for backward compatibility. Use
+    :func:`_ccbridge_command_markers` for matching, this stays for
+    callers that just want a sample marker (e.g. for log messages).
+    """
+    return "ccbridge.cli stop-hook"
+
+
+def _quote_for_shell(path: str) -> str:
+    """Wrap path in double quotes if it contains spaces.
+
+    Claude Code parses hook ``command`` as a shell command. On Windows,
+    Python venvs can sit under "Program Files" / "AppData/Local" with
+    spaces — bare path would split into multiple argv tokens. Always
+    quote when needed; never harm to over-quote a path without spaces
+    but we keep it minimal for readability.
+    """
+    if " " in path:
+        return f'"{path}"'
+    return path
+
+
+def _hook_command(subcommand: str) -> str:
+    """Build the absolute hook command Claude Code will invoke.
+
+    Audit finding #3 (2026-05-03): bare ``ccbridge stop-hook`` is a
+    PATH-hijack risk + unstable across venvs. We instead point Claude
+    at ``<sys.executable> -m ccbridge.cli <subcommand>``: the exact
+    Python interpreter that ran ``ccbridge init``, so the hook always
+    resolves to the same package version that was installed at
+    init-time, regardless of subsequent PATH changes.
+    """
+    return f"{_quote_for_shell(sys.executable)} -m ccbridge.cli {subcommand}"
 
 
 def _build_stop_hook_entry() -> dict[str, Any]:
@@ -577,7 +632,7 @@ def _build_stop_hook_entry() -> dict[str, Any]:
         "hooks": [
             {
                 "type": "command",
-                "command": "ccbridge stop-hook",
+                "command": _hook_command("stop-hook"),
             }
         ],
     }
@@ -618,19 +673,26 @@ def _patch_settings_json(
 
     Returns (patched, backed_up):
       - patched: True if file was written (new or modified)
-      - backed_up: True if a .ccbridge.bak was created
+      - backed_up: True if a .ccbridge.bak was created during this call
 
     Raises OSError on atomic write failure. Caller is responsible for
     backup-restore on failure.
-    """
-    backed_up = False
-    existing: dict[str, Any] = {}
 
-    if settings_path.exists():
+    Backup discipline (audit finding #1, 2026-05-03): backup is created
+    ONLY when we are about to actually write. If the file already exists
+    AND already contains our entry AND not force — return early WITHOUT
+    creating a backup. Otherwise we'd overwrite a legitimate pre-CCBridge
+    backup with the post-init state on every repeat init, which then
+    poisons uninstall (it would restore that bogus backup and leave our
+    hook installed). Backup must always reflect pre-CCBridge state.
+    """
+    existing: dict[str, Any] = {}
+    file_existed = settings_path.exists()
+
+    if file_existed:
         try:
             existing = json.loads(settings_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            # Don't risk overwriting a file we can't parse — bail.
             raise OSError(
                 f"existing {settings_path} is not valid JSON; "
                 "refusing to patch"
@@ -639,14 +701,6 @@ def _patch_settings_json(
             raise OSError(
                 f"existing {settings_path} top-level is not an object"
             )
-        # Backup before any modification.
-        backup = settings_path.with_suffix(
-            settings_path.suffix + ".ccbridge.bak"
-        )
-        backup.write_text(
-            settings_path.read_text(encoding="utf-8"), encoding="utf-8"
-        )
-        backed_up = True
 
     hooks = existing.setdefault("hooks", {})
     if not isinstance(hooks, dict):
@@ -659,38 +713,64 @@ def _patch_settings_json(
             f"{settings_path} hooks.Stop is not an array"
         )
 
-    # Idempotency: skip if our entry is already there.
+    markers = _ccbridge_command_markers("stop-hook")
     already_present = any(
-        any(
-            _stop_hook_command_marker() in (h.get("command", ""))
-            for h in (entry.get("hooks") or [])
-            if isinstance(h, dict)
-        )
+        _entry_matches_markers(entry, markers)
         for entry in stop
         if isinstance(entry, dict)
     )
 
     if already_present and not force:
-        return False, backed_up
+        # Nothing to do, nothing to back up.
+        return False, False
 
-    if force:
-        # Drop any prior ccbridge entries before re-adding clean one.
+    # We ARE going to modify. Take backup now if the file pre-existed
+    # AND we don't already have a backup (existing backup is more
+    # authoritatively "pre-CCBridge" than what we're about to overwrite).
+    backed_up = False
+    if file_existed:
+        backup = settings_path.with_suffix(
+            settings_path.suffix + ".ccbridge.bak"
+        )
+        if not backup.exists():
+            backup.write_text(
+                settings_path.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            backed_up = True
+
+    if force or already_present:
+        # Strip any prior ccbridge entries — both new-form and legacy.
+        # ``already_present`` here means we ARE force=True (because
+        # without force we returned earlier), so this drops the old
+        # entries before the clean append below.
         stop[:] = [
             entry
             for entry in stop
             if not isinstance(entry, dict)
-            or not any(
-                _stop_hook_command_marker() in (h.get("command", ""))
-                for h in (entry.get("hooks") or [])
-                if isinstance(h, dict)
-            )
+            or not _entry_matches_markers(entry, markers)
         ]
 
-    if not already_present or force:
-        stop.append(_build_stop_hook_entry())
-
+    stop.append(_build_stop_hook_entry())
     _atomic_write_json(settings_path, existing)
     return True, backed_up
+
+
+def _entry_matches_markers(
+    entry: dict[str, Any], markers: tuple[str, ...]
+) -> bool:
+    """True if any hook in this Stop-array entry's hooks list contains
+    one of our markers in its command. Tolerant of malformed shapes.
+    """
+    hooks = entry.get("hooks") or []
+    if not isinstance(hooks, list):
+        return False
+    for h in hooks:
+        if not isinstance(h, dict):
+            continue
+        cmd = h.get("command") or ""
+        if any(marker in cmd for marker in markers):
+            return True
+    return False
 
 
 def _restore_settings_backup(settings_path: Path) -> None:
@@ -791,16 +871,15 @@ def init(path: str, force: bool, as_json: bool) -> None:
 
 
 def _is_ccbridge_entry(entry: Any) -> bool:
-    """Predicate: True if this Stop-array entry is OUR ccbridge entry."""
+    """Predicate: True if this Stop-array entry is OUR ccbridge entry.
+
+    Recognises both the new absolute-path form and legacy bare form.
+    See :func:`_ccbridge_command_markers` for the marker set.
+    """
     if not isinstance(entry, dict):
         return False
-    hooks = entry.get("hooks") or []
-    if not isinstance(hooks, list):
-        return False
-    return any(
-        isinstance(h, dict)
-        and _stop_hook_command_marker() in (h.get("command") or "")
-        for h in hooks
+    return _entry_matches_markers(
+        entry, _ccbridge_command_markers("stop-hook")
     )
 
 
@@ -964,3 +1043,11 @@ def _print_stderr(message: str) -> None:
 
 
 __all__ = ("cli",)
+
+
+if __name__ == "__main__":
+    # Allows ``python -m ccbridge.cli`` invocation. Used by the Stop /
+    # UserPromptSubmit hook commands written into .claude/settings.json
+    # — those commands run via the project's Python interpreter so we
+    # don't depend on a global PATH ``ccbridge`` shim.
+    cli()

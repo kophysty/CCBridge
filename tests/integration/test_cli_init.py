@@ -139,11 +139,61 @@ def test_init_stop_hook_entry_uses_stop_hook_subcommand(
     for entry in data["hooks"]["Stop"]:
         for hook in entry.get("hooks", []):
             cmd = hook.get("command", "")
-            if "ccbridge stop-hook" in cmd:
+            if "stop-hook" in cmd:
                 found = True
                 # Must NOT use audit run as the hook command.
                 assert "audit run" not in cmd
-    assert found, f"no ccbridge stop-hook entry in {data}"
+    assert found, f"no stop-hook entry in {data}"
+
+
+def test_init_stop_hook_command_is_absolute_path(tmp_path: Path) -> None:
+    """Audit finding #3: bare 'ccbridge stop-hook' is a PATH-hijack
+    risk on Windows / unstable across venvs. The hook command must be
+    an absolute path to the python interpreter that owns the project's
+    ccbridge install, invoking ``python -m ccbridge.cli stop-hook``.
+    """
+    import os
+    import sys
+
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    runner = CliRunner()
+    runner.invoke(cli, ["init", str(project)])
+
+    data = json.loads(
+        (project / ".claude" / "settings.json").read_text(encoding="utf-8")
+    )
+
+    cmd = ""
+    for entry in data["hooks"]["Stop"]:
+        for hook in entry.get("hooks", []):
+            if "stop-hook" in hook.get("command", ""):
+                cmd = hook["command"]
+                break
+
+    assert cmd, "no stop-hook entry"
+    # Bare command must NOT appear.
+    assert not cmd.startswith("ccbridge "), (
+        f"hook command must not start with bare 'ccbridge': {cmd!r}"
+    )
+    # Must reference python -m ccbridge.cli with an absolute interpreter.
+    assert "ccbridge.cli" in cmd, f"command should invoke ccbridge.cli: {cmd!r}"
+    assert "stop-hook" in cmd
+    # Extract the interpreter token (first token, possibly quoted).
+    first_token = cmd.split()[0].strip('"').strip("'")
+    assert os.path.isabs(first_token), (
+        f"interpreter must be absolute path, got: {first_token!r}"
+    )
+    # Quoting: if the path contains spaces, must be quoted.
+    if " " in first_token:
+        assert cmd.startswith('"'), f"path with spaces must be quoted: {cmd!r}"
+    # Sanity: the interpreter we resolved is the same Python that's
+    # running this test (init was invoked via this interpreter, so it
+    # writes its own sys.executable into the hook command).
+    assert first_token == sys.executable or first_token.replace(
+        "/", os.sep
+    ) == sys.executable
 
 
 def test_init_preserves_existing_stop_hooks(tmp_path: Path) -> None:
@@ -182,7 +232,7 @@ def test_init_preserves_existing_stop_hooks(tmp_path: Path) -> None:
         for hook in entry.get("hooks", []):
             cmds.append(hook.get("command", ""))
     assert any("echo user-hook" in c for c in cmds), "user hook removed"
-    assert any("ccbridge stop-hook" in c for c in cmds), "ccbridge hook missing"
+    assert any("stop-hook" in c for c in cmds), "ccbridge stop-hook missing"
 
 
 def test_init_preserves_unrelated_settings_keys(tmp_path: Path) -> None:
@@ -286,6 +336,53 @@ def test_init_force_recreates(tmp_path: Path) -> None:
     assert identity_second.project_id != identity_first.project_id
 
 
+def test_init_recognises_legacy_bare_entry_does_not_duplicate(
+    tmp_path: Path,
+) -> None:
+    """Audit follow-up: a project initialized by an older CCBridge
+    version has ``ccbridge stop-hook`` (bare) in settings.json. Running
+    the new ``init`` must recognise it as ours and not add a second
+    entry.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    claude_dir = project / ".claude"
+    claude_dir.mkdir()
+    legacy_settings = {
+        "hooks": {
+            "Stop": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {"type": "command", "command": "ccbridge stop-hook"}
+                    ],
+                }
+            ]
+        }
+    }
+    (claude_dir / "settings.json").write_text(
+        json.dumps(legacy_settings), encoding="utf-8"
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["init", str(project)])
+    assert result.exit_code == 0
+
+    data = json.loads(
+        (claude_dir / "settings.json").read_text(encoding="utf-8")
+    )
+    cmds: list[str] = []
+    for entry in data["hooks"]["Stop"]:
+        for hook in entry.get("hooks", []):
+            cmds.append(hook.get("command", ""))
+    # No duplication: still exactly one ccbridge-marked entry.
+    ccbridge_cmds = [c for c in cmds if "stop-hook" in c]
+    assert len(ccbridge_cmds) == 1, (
+        f"expected 1 ccbridge entry after init-on-legacy, got "
+        f"{len(ccbridge_cmds)}: {ccbridge_cmds}"
+    )
+
+
 def test_init_idempotent_does_not_duplicate_stop_hook_entry(
     tmp_path: Path,
 ) -> None:
@@ -303,7 +400,7 @@ def test_init_idempotent_does_not_duplicate_stop_hook_entry(
     ccbridge_count = 0
     for entry in data["hooks"]["Stop"]:
         for hook in entry.get("hooks", []):
-            if "ccbridge stop-hook" in hook.get("command", ""):
+            if "stop-hook" in hook.get("command", ""):
                 ccbridge_count += 1
     assert ccbridge_count == 1, (
         f"expected 1 ccbridge entry, got {ccbridge_count}"
