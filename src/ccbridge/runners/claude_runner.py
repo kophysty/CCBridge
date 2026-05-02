@@ -35,6 +35,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ccbridge.runners import resolve_executable
+
 logger = logging.getLogger(__name__)
 
 
@@ -132,7 +134,15 @@ def run_claude(
         unparseable JSON stdout. Use ``err.cause`` for the original
         exception when branching on failure mode is needed.
     """
-    argv = [executable, "--print", "--output-format", "json"]
+    try:
+        resolved = resolve_executable(executable)
+    except FileNotFoundError as exc:
+        raise ClaudeRunnerError(
+            f"claude executable not found at {executable!r}",
+            cause=exc,
+        ) from exc
+
+    argv = [resolved, "--print", "--output-format", "json"]
     logger.debug(
         "running claude: %s (cwd=%s, timeout=%s, prompt_len=%d)",
         argv,

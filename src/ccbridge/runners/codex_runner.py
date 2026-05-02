@@ -63,6 +63,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ccbridge.runners import resolve_executable
+
 logger = logging.getLogger(__name__)
 
 
@@ -301,8 +303,16 @@ def run_codex(
     :class:`CodexRunnerError` (or :class:`CodexRateLimitError` for
     exhausted 429 retries).
     """
+    try:
+        resolved = resolve_executable(executable)
+    except FileNotFoundError as exc:
+        raise CodexRunnerError(
+            f"codex executable not found at {executable!r}",
+            cause=exc,
+        ) from exc
+
     argv = [
-        executable,
+        resolved,
         "exec",
         "--json",
         "--sandbox",

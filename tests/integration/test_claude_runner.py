@@ -46,6 +46,22 @@ def _stub_run(
     return calls
 
 
+@pytest.fixture(autouse=True)
+def _resolve_executable_passthrough(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default: resolve_executable is identity for bare names.
+
+    Real shutil.which is not available in CI test envs (no claude
+    installed). Tests that exercise the resolver explicitly override
+    via their own monkeypatch.setattr.
+    """
+    monkeypatch.setattr(
+        "ccbridge.runners.claude_runner.resolve_executable",
+        lambda name: name,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------
@@ -195,19 +211,48 @@ def test_run_claude_raises_on_invalid_json_stdout(
 def test_run_claude_raises_on_executable_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    def handler(
-        argv: list[str], kwargs: dict[str, Any]
-    ) -> subprocess.CompletedProcess[str]:
-        raise FileNotFoundError("claude not found")
-
-    _stub_run(monkeypatch, handler)
+    """If ``claude`` is not in PATH at all, resolve_executable raises and
+    we surface it as ClaudeRunnerError before subprocess is invoked.
+    """
+    monkeypatch.setattr(
+        "ccbridge.runners.claude_runner.resolve_executable",
+        lambda name: (_ for _ in ()).throw(
+            FileNotFoundError(f"executable {name!r} not in PATH")
+        ),
+    )
 
     with pytest.raises(ClaudeRunnerError) as exc_info:
         run_claude(prompt="x", cwd=tmp_path)
 
-    assert "not found" in str(exc_info.value).lower() or "claude" in str(
-        exc_info.value
-    ).lower()
+    msg = str(exc_info.value).lower()
+    assert "not found" in msg or "not in path" in msg or "claude" in msg
+
+
+def test_run_claude_uses_resolved_executable_in_argv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression for Windows: ``claude`` is typically installed as
+    ``claude.cmd`` via npm. resolve_executable handles PATHEXT —
+    argv[0] must be the resolved full path.
+    """
+    fake_resolved = "/fake/path/to/claude.cmd"
+    monkeypatch.setattr(
+        "ccbridge.runners.claude_runner.resolve_executable",
+        lambda name: fake_resolved if name == "claude" else name,
+    )
+
+    def handler(
+        argv: list[str], kwargs: dict[str, Any]
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 0, stdout='{"x":1}', stderr="")
+
+    calls = _stub_run(monkeypatch, handler)
+    run_claude(prompt="x", cwd=tmp_path)
+
+    argv, _ = calls[0]
+    assert argv[0] == fake_resolved, (
+        f"argv[0] should be the resolved path, got: {argv[0]!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -70,6 +70,22 @@ def _no_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     return sleeps
 
 
+@pytest.fixture(autouse=True)
+def _resolve_executable_passthrough(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default: resolve_executable is identity for bare names.
+
+    Real shutil.which is not available in CI test envs (no codex
+    installed), and we don't want every test to monkeypatch it.
+    Tests that exercise the resolver explicitly override this fixture.
+    """
+    monkeypatch.setattr(
+        "ccbridge.runners.codex_runner.resolve_executable",
+        lambda name: name,
+    )
+
+
 def _event_stream(verdict_text: str) -> str:
     """Build a minimal valid event stream wrapping a verdict text payload."""
     import json as _json
@@ -456,19 +472,52 @@ def test_run_codex_accepts_custom_executable(
 def test_run_codex_raises_on_executable_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    def handler(
-        argv: list[str], kwargs: dict[str, Any]
-    ) -> subprocess.CompletedProcess[str]:
-        raise FileNotFoundError("codex not found")
-
-    _stub_run(monkeypatch, handler)
+    """If ``codex`` is not in PATH at all, resolve_executable raises and
+    we surface it as CodexRunnerError before subprocess is invoked.
+    """
+    monkeypatch.setattr(
+        "ccbridge.runners.codex_runner.resolve_executable",
+        lambda name: (_ for _ in ()).throw(
+            FileNotFoundError(f"executable {name!r} not in PATH")
+        ),
+    )
     _no_sleep(monkeypatch)
 
     with pytest.raises(CodexRunnerError) as exc_info:
         run_codex(prompt="x", cwd=tmp_path)
 
     msg = str(exc_info.value).lower()
-    assert "not found" in msg or "codex" in msg
+    assert "not found" in msg or "not in path" in msg or "codex" in msg
+
+
+def test_run_codex_uses_resolved_executable_in_argv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression for Windows: subprocess.run without shell=True does NOT
+    apply PATHEXT, so a bare ``codex`` in argv fails when only
+    ``codex.cmd`` is on disk. resolve_executable returns the full path
+    (including .cmd extension), and that path must end up in argv[0].
+    """
+    fake_resolved = "/fake/path/to/codex.cmd"
+    monkeypatch.setattr(
+        "ccbridge.runners.codex_runner.resolve_executable",
+        lambda name: fake_resolved if name == "codex" else name,
+    )
+
+    def handler(
+        argv: list[str], kwargs: dict[str, Any]
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=EVENT_STREAM_FIXTURE, stderr=""
+        )
+
+    calls = _stub_run(monkeypatch, handler)
+    run_codex(prompt="x", cwd=tmp_path)
+
+    argv, _ = calls[0]
+    assert argv[0] == fake_resolved, (
+        f"argv[0] should be the resolved path, got: {argv[0]!r}"
+    )
 
 
 def test_run_codex_raises_on_nonzero_exit_no_429(
