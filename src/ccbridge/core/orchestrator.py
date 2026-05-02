@@ -97,6 +97,27 @@ TERMINAL_VERDICTS = frozenset({"pass", "needs_human", "skipped", "error"})
 
 
 # ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+
+class AuditPersistenceError(OSError):
+    """Raised when ``audit_log.append`` fails inside ``_emit``.
+
+    Subclasses :class:`OSError` so that callers who wrap ``run_audit``
+    with ``except OSError:`` still catch it. The :func:`_run_loop`
+    catch is narrow on this class specifically — other ``OSError``
+    sources (git subprocess in ``build_context``, ``state.json``
+    atomic write, snapshot cleanup) propagate as the real failures
+    they are, and get persisted normally because the audit log itself
+    is still writable.
+
+    See ADR-002 §Consequences and the audit follow-up that distinguished
+    this from a blanket ``OSError`` catch.
+    """
+
+
+# ---------------------------------------------------------------------------
 # Outcome
 # ---------------------------------------------------------------------------
 
@@ -198,7 +219,7 @@ def _run_loop(
 
     iteration = 0
     started_emitted = False
-    audit_failure: OSError | None = None
+    audit_failure: AuditPersistenceError | None = None
 
     try:
         while iteration < max_iterations:
@@ -383,12 +404,17 @@ def _run_loop(
             # Loop fell through max_iterations without a terminal break.
             # By contract three back-to-back fails escalate to needs_human.
             final_verdict = "needs_human"
-    except OSError as exc:
-        # audit_log.append failed somewhere in the loop. Per ADR-002
-        # §Consequences (and audit finding #5 fixup): we do NOT try to
-        # record the failure in the broken audit.jsonl sink. ErrorEvent
-        # goes to the bus only; renderers / future listeners still see
-        # what happened.
+    except AuditPersistenceError as exc:
+        # audit_log.append itself failed. Per ADR-002 §Consequences and
+        # the audit finding #5 fixup: we do NOT try to record the failure
+        # in the broken audit.jsonl sink. ErrorEvent goes to the bus only;
+        # renderers / future listeners still see what happened.
+        #
+        # NB: this catch is narrow on AuditPersistenceError (subclass of
+        # OSError) precisely so unrelated OSErrors — from build_context's
+        # git subprocess, state.json atomic write, snapshot cleanup —
+        # propagate as their own failures and reach the broader handler
+        # below, which CAN persist them normally because audit is fine.
         audit_failure = exc
         logger.exception("audit_log persistence failure")
         final_verdict = "error"
@@ -397,9 +423,43 @@ def _run_loop(
             ErrorEvent(
                 run_uuid=run_uuid,
                 error_type="audit_persistence",
-                message=f"audit.jsonl append failed: {exc}",
+                message=str(exc),
             ),
         )
+    except OSError as exc:
+        # Operational failure that is NOT audit-side: git subprocess in
+        # build_context, state.json write, snapshot cleanup, etc. Audit
+        # log is still writable, so we persist the real ErrorEvent
+        # there; the loop-level final IterationCompleteEvent below also
+        # goes to audit normally.
+        logger.exception("orchestrator I/O failure (non-audit)")
+        final_verdict = "error"
+        try:
+            _emit(
+                bus,
+                audit_log,
+                ErrorEvent(
+                    run_uuid=run_uuid,
+                    error_type="orchestrator_io",
+                    message=str(exc),
+                ),
+            )
+        except AuditPersistenceError as audit_exc:
+            # Defensive: in the unlikely event that the persistence
+            # layer also fails right after the operational failure,
+            # demote to bus-only to avoid losing both signals.
+            audit_failure = audit_exc
+            logger.exception(
+                "audit_log persistence failure during error reporting"
+            )
+            _emit_bus_only(
+                bus,
+                ErrorEvent(
+                    run_uuid=run_uuid,
+                    error_type="audit_persistence",
+                    message=str(audit_exc),
+                ),
+            )
     finally:
         # Clear in-flight state regardless of how we exited. Suppress
         # secondary I/O errors from clear_iteration itself if the disk
@@ -424,7 +484,7 @@ def _run_loop(
     else:
         try:
             _emit(bus, audit_log, final_event)
-        except OSError as exc:
+        except AuditPersistenceError as exc:
             logger.exception("final IterationCompleteEvent persistence failure")
             final_verdict = "error"
             _emit_bus_only(
@@ -432,7 +492,7 @@ def _run_loop(
                 ErrorEvent(
                     run_uuid=run_uuid,
                     error_type="audit_persistence",
-                    message=f"audit.jsonl append failed: {exc}",
+                    message=str(exc),
                 ),
             )
 
@@ -453,16 +513,21 @@ def _emit(bus: EventBus, audit_log: AuditLog, event: CCBridgeEvent) -> None:
     """Atomically persist event to audit.jsonl, then publish to the bus.
 
     Raises:
-        OSError: if audit_log.append fails. The caller must transition
-            to the error path (see ADR-002 §Consequences). We deliberately
-            do NOT swallow the failure — audit.jsonl is the primary
-            source of truth, and silently dropping events would violate
-            the §2.4 contract.
+        AuditPersistenceError: if audit_log.append fails. Wraps the
+            underlying OSError so :func:`_run_loop` can catch
+            persistence failures specifically without swallowing
+            unrelated ``OSError`` from other operations in the loop
+            body. ADR-002 §Consequences.
 
     bus.emit is best-effort: listener exceptions are caught inside
     EventBus and logged, never propagated.
     """
-    audit_log.append(event)
+    try:
+        audit_log.append(event)
+    except OSError as exc:
+        raise AuditPersistenceError(
+            f"audit_log.append failed for {type(event).__name__}: {exc}"
+        ) from exc
     bus.emit(event)
 
 
@@ -544,4 +609,4 @@ def _validate_codex_result(
 _ = replace
 
 
-__all__ = ("OrchestratorOutcome", "run_audit")
+__all__ = ("AuditPersistenceError", "OrchestratorOutcome", "run_audit")
