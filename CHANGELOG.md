@@ -21,12 +21,16 @@
 ```
   Этап     Что                                                Статус
   ───────  ─────────────────────────────────────────────────  ──────────
-  PR1      core modules: verdict, events, event_bus,          ✅ 8/8
-            lockfile, audit_log, state, migrations, config     107 tests
-            + unit tests                                        97% cover
+  PR1      core modules: verdict, events, event_bus,          ✅ Pushed
+            lockfile, audit_log, state, migrations, config     b1edc23
+            + unit tests + методология (Слой 1)                107 tests
+                                                                97% cover
 
-  PR2      orchestrator, runners, CLI, transports,             📋 Queued
-            renderers, integration tests
+  PR2a     runners + context_builder + orchestrator           🚧 Active
+            + integration tests                                 PR2-plan.md
+
+  PR2b     renderers + transports + cli                        📋 Queued
+            + integration + e2e tests                           PR2-plan.md
 
   PR3      templates + ccbridge init                            📋 Queued
             (boilerplate для новых проектов)
@@ -34,6 +38,13 @@
 
 ### Added (Unreleased)
 
+- 2026-05-02 — `Projects/v0.1-mvp/PR2-plan.md` — детальный план PR2 с
+  декомпозицией PR2a (runners + context_builder + orchestrator) /
+  PR2b (renderers + transports + cli), per-модуль коммитами, AC-маппингом
+  и TDD-дисциплиной. По R-007.
+- 2026-05-02 — `.env.example` — шаблон env-переменных
+  (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CLAUDE_PROJECT_DIR`,
+  dev-overrides). См. ARCHITECTURE.md §6.1.
 - 2026-05-02 — `core/lockfile.py` — портабельный file lock через
   `portalocker` с triplet metadata (pid + hostname + started_at +
   run_uuid), TTL stale recovery (default 30 мин), context manager.
@@ -77,6 +88,10 @@
   в `ARCHITECTURE.md` v0.0.2.
 - 2026-04-28 — `README.md`, `ARCHITECTURE.md` v0.0.1, базовая
   структура папок, `.gitignore`.
+- 2026-05-02 — `.gitignore` расширен: caches (mypy/ruff/pytest/
+  coverage), secrets (`.env`, `.env.local`, `*.pem`), runtime артефакты
+  CCBridge (lockfile, state.json, audit.jsonl, identity.json,
+  `.ccbridge/`), IDE/OS junk, logs, Output генерируемые артефакты.
 
 ### Changed (Unreleased)
 

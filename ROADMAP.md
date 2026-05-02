@@ -7,7 +7,7 @@
 > следующее, что отложено, что уже сделано. Ссылки на все плановые
 > документы.
 
-**Обновление:** 2026-05-02
+**Обновление:** 2026-05-02 (PR1 pushed, PR2a started)
 **Правило ведения:** [R-007 — planning discipline](Rulebook/R-007-workflow-planning-discipline.md)
 
 ---
@@ -36,17 +36,18 @@
 ```
   Версия     Название                              Plan / Статус
   ─────────  ────────────────────────────────────  ─────────────────────────────
-  v0.1-PR1   Core modules                          Plan: Projects/v0.1-mvp/
-   (Local     (verdict, events, event_bus,         README.md
-   Complete)  lockfile, audit_log, state,
-              migrations, config) + unit tests     ✅ Local Complete:
-                                                   8/8 модулей готовы.
-                                                   107 тестов проходят.
-                                                   Coverage 97%, ruff clean,
-                                                   mypy strict ok.
+  v0.1-PR2a  Runners + context_builder +            Plan: Projects/v0.1-mvp/
+   (Active)  orchestrator + integration tests      PR2-plan.md (детальный)
 
-                                                   Ожидает: ОК пользователя
-                                                   на коммит и старт PR2.
+                                                   Branch: pr2a/orchestrator-
+                                                    runners (от main b1edc23)
+
+                                                   Trigger: ✅ PR1 pushed,
+                                                    ОК пользователя на старт
+
+                                                   Acceptance: AC-3, AC-4,
+                                                   AC-14, AC-18, AC-19, AC-20
+                                                   закрыты. Pytest зелёный.
 
   Слой 1     Методологическая структура            Plan: вытащено из Oil_auto
    (Active)   (Rulebook + ROADMAP + Discovery       — анализ в Discovery/logs/
@@ -68,16 +69,16 @@
 ```
   Версия     Название                              Plan / Trigger
   ─────────  ────────────────────────────────────  ─────────────────────────────
-  v0.1-PR2   Orchestrator + runners + CLI          Plan: будет написан
-              + transports/stop_hook.py            после завершения PR1
-              + transports/audit_watch.py
-              + renderers (rich/jsonl/silent)      Trigger: PR1 merged
-              + integration tests                  + ОК пользователя
+  v0.1-PR2b  Renderers + transports + cli          Plan: Projects/v0.1-mvp/
+              + integration + e2e tests             PR2-plan.md §PR2b
+
+                                                   Trigger: PR2a merged в main
+                                                   + ОК пользователя
 
   v0.1-PR3   Templates + ccbridge init             Plan: будет написан
-              (Слой 2 — boilerplate для новых      после завершения PR2
+              (Слой 2 — boilerplate для новых      после завершения PR2b
               проектов через ccbridge init
-              --methodology=full)                  Trigger: PR2 merged
+              --methodology=full)                  Trigger: PR2b merged
 
   v0.1.0     Финальный релиз MVP                   Все AC-1..AC-21 проходят,
               (объединение PR1+PR2+PR3,            tag в git, CHANGELOG
@@ -137,5 +138,14 @@
 ```
   Версия     Когда         Что
   ─────────  ────────────  ──────────────────────────────────────────
-  (нет — первый релиз будет v0.1.0)
+  v0.1-PR1    2026-05-02    Core modules: events, event_bus, verdict,
+   (push)                    lockfile, audit_log, state, migrations,
+                             config. 107 тестов, coverage 97%, ruff
+                             clean, mypy strict ok. + методологическая
+                             структура (Слой 1: Rulebook + ROADMAP +
+                             ADR + Discovery + CLAUDE/AGENTS).
+                             Commit: b1edc23 на main → pushed в
+                             github.com/kophysty/CCBridge.
+
+  v0.1.0     (TBD)           Финальный релиз MVP — после PR2 + PR3.
 ```

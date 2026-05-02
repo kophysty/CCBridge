@@ -149,15 +149,22 @@ MVP peer-review pipeline между Claude Code и Codex CLI:
 ```
   Этап     Статус               Что готово
   ───────  ──────────────────   ──────────────────────────────────────────────
-  PR1       ✅ Complete           8/8 модулей: events, event_bus, verdict,
+  PR1       ✅ Shipped (push)     8/8 модулей: events, event_bus, verdict,
                                   lockfile, audit_log, state, migrations, config
                                   107 тестов (40 unit + 67 integration)
                                   Coverage 97%, ruff clean, mypy strict ok
                                   + методологическая структура (Слой 1)
-  PR2       📋 Queued
+                                  Commit b1edc23 → main pushed.
+  PR2a      🚧 Active             Plan: PR2-plan.md §PR2a
+                                  runners + context_builder + orchestrator
+                                  Branch: pr2a/orchestrator-runners
+  PR2b      📋 Queued             Plan: PR2-plan.md §PR2b
+                                  renderers + transports + cli
   PR3       📋 Queued
   v0.1.0    📋 Queued
 ```
+
+См. детальный план PR2: [`PR2-plan.md`](PR2-plan.md).
 
 См. также `Discovery/logs/decisions.md` для контекста принятых
 решений.
