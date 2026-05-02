@@ -76,16 +76,26 @@ def test_bare_name_not_in_path_raises(
     assert "not found" in str(exc_info.value).lower()
 
 
-def test_relative_path_treated_as_bare(
+def test_path_with_separator_passes_through_without_which(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Edge case: ``./tools/codex`` is not absolute. We still pass it
-    through shutil.which, which on POSIX/Windows handles relative
-    paths sensibly (returns the path if it exists, None if not).
+    """Anything that contains a ``/`` or ``\\`` is treated as a path,
+    not a bare command name — even relative paths like ``./tools/codex``.
+
+    We deliberately do NOT call shutil.which on these; the helper's
+    contract is "if the caller is asking for a specific file location,
+    don't probe PATH". This matches the abs-path passthrough semantics
+    and keeps behaviour platform-independent (``Path.is_absolute()``
+    differs between POSIX and Windows).
     """
-    monkeypatch.setattr(
-        shutil,
-        "which",
-        lambda name: "./tools/codex" if name == "./tools/codex" else None,
-    )
+    called = {"flag": False}
+
+    def fake_which(name: str) -> str | None:
+        called["flag"] = True
+        return None
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+
     assert resolve_executable("./tools/codex") == "./tools/codex"
+    assert resolve_executable("tools\\codex.cmd") == "tools\\codex.cmd"
+    assert called["flag"] is False
