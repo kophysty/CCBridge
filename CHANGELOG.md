@@ -38,6 +38,29 @@
 
 ### Added (Unreleased)
 
+- 2026-05-02 — `ADR/ADR-002-audit-jsonl-ownership-orchestrator.md`
+  (Accepted) — фиксация архитектурного решения по конфликту
+  PR2a vs PR2b plan. Variant A: orchestrator owns audit.jsonl
+  appends, EventBus = UI/broadcast only, JsonlRenderer удалён из
+  v0.1 плана. Найдено в аудите PR2a (handoff-pr2a-audit.md
+  Major #4).
+
+### Changed (Unreleased)
+
+- 2026-05-02 — `Projects/v0.1-mvp/PR2-plan.md` §PR2b: JsonlRenderer
+  удалён из списка модулей, добавлено примечание про ownership
+  с ссылкой на ADR-002.
+- 2026-05-02 — `ARCHITECTURE.md` §2.9: уточнение что renderer'ы
+  НЕ пишут в audit.jsonl, обновлена диаграмма потока данных.
+  audit_watch явно описан как отдельный процесс, читает файл
+  напрямую (не in-process bus).
+- 2026-05-02 — `.gitignore` исправлен: паттерны `logs/`, `tmp/`,
+  `temp/` теперь анчорятся на корень репо (`/logs/`, `/tmp/`,
+  `/temp/`), чтобы не накрывать `Discovery/logs/` (нашу
+  нарративную папку — она tracked).
+
+### Added (Unreleased)
+
 - 2026-05-02 — **PR2a code-complete** на ветке `pr2a/orchestrator-
   runners`. 4 модуля + 47 интеграционных тестов:
   - `runners/claude_runner.py` (98% cov, 10 тестов) — subprocess

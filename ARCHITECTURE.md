@@ -560,12 +560,15 @@ class EventBus:
 
 **Renderer'ы** (`renderers/`):
 
+> ⚠️ **ADR-002 (2026-05-02):** renderer'ы НЕ пишут в `audit.jsonl`.
+> Persistence — ответственность orchestrator'а (см. §2.4). Renderer
+> = только UI/broadcast layer. `JsonlRenderer` НЕ существует.
+
 ```
 renderers/
 ├── __init__.py
 ├── base.py              # Renderer protocol
 ├── rich_renderer.py     # для Stop hook stdout — красивый rich UI
-├── jsonl_renderer.py    # для audit watch — line-delimited JSON
 ├── silent_renderer.py   # для тестов
 └── (future)
     ├── wave_renderer.py  # wsh badge, tab notifications в Wave
@@ -579,16 +582,29 @@ class Renderer(Protocol):
     def __call__(self, event: CCBridgeEvent) -> None: ...
 ```
 
-**Поток данных:**
+**Поток данных** (после ADR-002):
 
 ```
-orchestrator ─emit→ EventBus ─fanout→ ┌─ RichRenderer (stdout)
-                                       ├─ JsonlRenderer (audit.jsonl stream)
+orchestrator ─append→ audit.jsonl  (PRIMARY persistence, sync, owned)
+            └─emit→ EventBus ─fanout→ ┌─ RichRenderer (stdout)
+                                       ├─ SilentRenderer (тесты)
                                        └─ (v0.2+) WaveRenderer (wsh badge)
                                                   MCPRenderer (tool result)
+
+audit_watch (отдельный процесс) ─tail→ audit.jsonl
 ```
 
+Каждое событие сначала atomically append'ится в audit.jsonl, потом
+broadcast'ится renderer'ам. Если append упал — events на bus НЕ
+эмитятся, orchestrator переходит в error path (см. ADR-002
+consequences).
+
 **Live tail второй терминал — `ccbridge audit watch`:**
+
+`audit_watch` — отдельный процесс, читает `audit.jsonl` напрямую
+с диска. Не подписан на in-process EventBus. Это правильный
+паттерн: между процессами orchestrator'а (один или несколько) и
+watcher'ами файл — единственный согласованный канал.
 
 ```python
 # transports/audit_watch.py
