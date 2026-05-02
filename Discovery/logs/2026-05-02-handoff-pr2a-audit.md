@@ -6,6 +6,14 @@
 **Состояние репо:** main = `a740890`, синхронизирован с
 `origin/main` (https://github.com/kophysty/CCBridge).
 
+> **Update 2026-05-02 (после аудита):** finding #4 (audit.jsonl
+> ownership) разрешён в [`ADR-002`](../../ADR/ADR-002-audit-jsonl-ownership-orchestrator.md):
+> Variant A — orchestrator владеет audit.jsonl, JsonlRenderer
+> удалён из v0.1. Упоминания jsonl_renderer ниже в §6 — это
+> исторический контекст из исходного PR2-plan.md, не план для
+> реализации. Актуальный список модулей PR2b см. в
+> [`Projects/v0.1-mvp/PR2-plan.md`](../../Projects/v0.1-mvp/PR2-plan.md).
+
 ---
 
 ## TL;DR

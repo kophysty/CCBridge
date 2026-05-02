@@ -16,7 +16,9 @@ CCBridge/
 ├── src/ccbridge/        # Источник
 │   ├── core/             # Transport-agnostic logic
 │   ├── transports/       # CLI / Stop hook / audit watch / (v0.3) MCP
-│   ├── renderers/        # rich / jsonl / silent / (v0.2) wave / (v0.3) mcp
+│   ├── renderers/        # rich / silent / (v0.2) wave / (v0.3) mcp
+│                          # (NB: persistence в audit.jsonl делает orchestrator,
+│                          #  не renderer — см. ADR-002)
 │   └── runners/          # Обёртки claude_runner / codex_runner
 ├── tests/
 │   ├── unit/             # Без I/O

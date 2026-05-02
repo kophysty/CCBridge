@@ -33,11 +33,14 @@ PR2 разделён на два под-этапа. Каждый под-этап
            core/orchestrator.py                                 Ядро работает с моками
            + integration-тесты с mock subprocess                runner'ов.
   ──────  ──────────────────────────────────────────────────  ──────────────────────────
-  PR2b    renderers/{base,silent,jsonl,rich}.py                 pytest зелёный.
+  PR2b    renderers/{base,silent,rich}.py                       pytest зелёный.
            transports/stop_hook.py                              AC-1, AC-2, AC-5..AC-8,
            transports/audit_watch.py                            AC-10, AC-15, AC-21
            cli.py (Click)                                       закрыты. MVP работает
            + integration + e2e (skip-by-default)                end-to-end.
+
+           NB: jsonl_renderer удалён (ADR-002 — audit.jsonl
+           пишет orchestrator, renderer'ы только UI/broadcast).
 ```
 
 ---
