@@ -1,0 +1,100 @@
+# ──────────────────────────────────────────────────────────────────
+# Python
+# ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+build/
+dist/
+wheels/
+.eggs/
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# ──────────────────────────────────────────────────────────────────
+# Test / lint / type-check caches
+# ──────────────────────────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.cache/
+.hypothesis/
+
+# Coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.cover
+
+# ──────────────────────────────────────────────────────────────────
+# Secrets / env (NEVER commit API keys)
+# ──────────────────────────────────────────────────────────────────
+# CCBridge requires OPENAI_API_KEY and ANTHROPIC_API_KEY.
+# See ARCHITECTURE.md §6.1 — keys live only in env, never in repo.
+.env
+.env.local
+.env.*.local
+.envrc
+*.pem
+*.key
+secrets/
+secrets.toml
+
+# ──────────────────────────────────────────────────────────────────
+# CCBridge runtime artefacts
+# ──────────────────────────────────────────────────────────────────
+# These appear inside connected projects' .ccbridge/ dirs, not here,
+# but we ignore them defensively in case a sample is generated locally.
+*.lock
+*.lock.tmp
+state.json
+state.json.tmp
+audit.jsonl
+audit.jsonl.tmp
+*.jsonl
+identity.json
+.ccbridge/
+
+# ──────────────────────────────────────────────────────────────────
+# IDE / editors
+# ──────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# ──────────────────────────────────────────────────────────────────
+# OS junk
+# ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ──────────────────────────────────────────────────────────────────
+# Logs / temp
+# ──────────────────────────────────────────────────────────────────
+*.log
+logs/
+tmp/
+temp/
+
+# ──────────────────────────────────────────────────────────────────
+# Output (READ-ONLY artefacts)
+# ──────────────────────────────────────────────────────────────────
+# Output/ structure is tracked, but generated content inside it isn't.
+Output/**/*.html
+Output/**/*.pdf
+!Output/README.md
