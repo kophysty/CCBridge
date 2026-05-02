@@ -548,8 +548,9 @@ class EventBus:
         self._listeners.append(listener)
 
     def emit(self, event: CCBridgeEvent) -> None:
-        # Также пишем все события в audit.jsonl как stream
-        # (`audit watch` читает из этого файла)
+        # Bus is broadcast-only. Persistence to audit.jsonl is done by
+        # the orchestrator BEFORE this call (ADR-002 — orchestrator
+        # owns audit log writes; renderers only render).
         for listener in self._listeners:
             try:
                 listener(event)
