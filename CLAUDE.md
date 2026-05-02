@@ -12,7 +12,7 @@ with code in this repository.
   если есть. Это точка синхронизации с предыдущими сессиями.
   **Текущий актуальный handoff:**
   [`Discovery/logs/2026-05-02-handoff-pr2a-audit.md`](Discovery/logs/2026-05-02-handoff-pr2a-audit.md)
-  (после PR2a merge, ожидает аудита).
+  (audit closed, fix-spike merged 61dfbc5, идёт PR2b).
   Предыдущий: [`2026-05-02-handoff-pr1-to-pr2.md`](Discovery/logs/2026-05-02-handoff-pr1-to-pr2.md).
 - **⭐ [`ROADMAP.md`](ROADMAP.md)** — **ВТОРОЕ ЧТО ЧИТАТЬ.** Единый
   реестр планов и версий: что делаем сейчас (Active), что следующее
@@ -102,14 +102,13 @@ with code in this repository.
 **CCBridge** — Python CLI tool для автоматизации peer-review между
 Claude Code CLI и OpenAI Codex CLI.
 
-**Текущая версия:** v0.0.3-draft (PR1+PR2a in main)
-**Текущая фаза:** Audit checkpoint после PR2a → PR2b (transports + cli)
+**Текущая версия:** v0.0.3-draft (PR1 + PR2a + audit fixes in main)
+**Текущая фаза:** PR2b — renderers + transports + cli
 
 **Архитектура:** [`ARCHITECTURE.md`](ARCHITECTURE.md)
 
-**Status: ACTIVE** — PR1 (core modules) и PR2a (runners +
-context_builder + orchestrator) в main, push в GitHub. Ожидает аудита
-перед стартом PR2b.
+**Status: ACTIVE** — PR1 + PR2a + audit fixes shipped в main
+(commit 61dfbc5). Идёт PR2b: renderers + transports + cli.
 
 ---
 
@@ -118,15 +117,17 @@ context_builder + orchestrator) в main, push в GitHub. Ожидает ауди
 См. [`ROADMAP.md`](ROADMAP.md) — секция Active.
 
 ```
-  Audit       Аудит PR2a перед стартом PR2b          🚧 Active
-   (2026-     (claude_runner, codex_runner,           Plan: Discovery/logs/
-    05-02)     context_builder, orchestrator)         2026-05-02-handoff-
-                                                       pr2a-audit.md
+  v0.1-PR2b   renderers + transports + cli           🚧 Active
+              + integration + e2e tests              Plan: Projects/v0.1-mvp/
+                                                       PR2-plan.md §PR2b
 
-                                                      Trigger: ✅ PR2a merged
-                                                       (a740890), pushed.
-                                                      Acceptance: ОК на
-                                                       старт PR2b.
+                                                     Trigger: ✅ Audit OK,
+                                                      fix-spike merged
+                                                      (61dfbc5).
+                                                     Acceptance: AC-1, AC-2,
+                                                      AC-5..AC-8, AC-10,
+                                                      AC-15, полный AC-21.
+                                                      MVP end-to-end.
 ```
 
 ---

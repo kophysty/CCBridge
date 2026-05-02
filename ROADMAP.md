@@ -7,7 +7,7 @@
 > следующее, что отложено, что уже сделано. Ссылки на все плановые
 > документы.
 
-**Обновление:** 2026-05-02 (PR2a merged & pushed, ожидает аудита)
+**Обновление:** 2026-05-02 (PR2a + audit fixes shipped, PR2b started)
 **Правило ведения:** [R-007 — planning discipline](Rulebook/R-007-workflow-planning-discipline.md)
 
 ---
@@ -36,17 +36,21 @@
 ```
   Версия     Название                              Plan / Статус
   ─────────  ────────────────────────────────────  ─────────────────────────────
-  Audit      Аудит PR2a перед стартом PR2b          Plan: Discovery/logs/
-   (Active)   (claude_runner, codex_runner,          2026-05-02-handoff-pr2a-
-              context_builder, orchestrator)         audit.md
+  v0.1-PR2b  Renderers + transports + cli          Plan: Projects/v0.1-mvp/
+   (Active)   + integration + e2e tests             PR2-plan.md §PR2b
+                                                    (обновлён под ADR-002 —
+                                                    JsonlRenderer удалён)
 
-                                                   Trigger: ✅ PR2a merged
-                                                    в main (a740890), pushed
+                                                   Trigger: ✅ Audit OK,
+                                                    fix/pr2a-audit-findings
+                                                    merged (61dfbc5)
 
-                                                   Acceptance: пользователь
-                                                   подтвердил готовность
-                                                   двигаться к PR2b или
-                                                   указал правки.
+                                                   Branch: pr2b/transports-cli
+
+                                                   Acceptance: AC-1, AC-2,
+                                                   AC-5..AC-8, AC-10, AC-15,
+                                                   полный AC-21. MVP работает
+                                                   end-to-end.
 
   Слой 1     Методологическая структура            Plan: вытащено из Oil_auto
    (Active)   (Rulebook + ROADMAP + Discovery       — анализ в Discovery/logs/
@@ -68,12 +72,6 @@
 ```
   Версия     Название                              Plan / Trigger
   ─────────  ────────────────────────────────────  ─────────────────────────────
-  v0.1-PR2b  Renderers + transports + cli          Plan: Projects/v0.1-mvp/
-              + integration + e2e tests             PR2-plan.md §PR2b
-
-                                                   Trigger: ✅ Audit PR2a OK
-                                                   + ОК пользователя
-
   v0.1-PR3   Templates + ccbridge init             Plan: будет написан
               (Слой 2 — boilerplate для новых      после завершения PR2b
               проектов через ccbridge init
@@ -157,6 +155,17 @@
                              Закрыто: AC-3, AC-4, AC-9, AC-11, AC-12,
                              AC-14, AC-18, AC-19, AC-20, частично
                              AC-21. Merge a740890 на main → pushed.
+
+  Audit       2026-05-02    Two rounds of audit closed all blockers
+   fixes                     before PR2b. ADR-002 (audit.jsonl owner-
+   (push)                    ship), AuditPersistenceError class
+                             (narrow OSError catch), codex JSONL
+                             stream parsing (real codex 0.125.0
+                             contract), prompt via stdin, --sandbox
+                             read-only, Windows PATHEXT resolution
+                             (shutil.which). 181 passed (+17 regr
+                             tests), coverage 94%. Merge 61dfbc5 на
+                             main → pushed.
 
   v0.1.0     (TBD)           Финальный релиз MVP — после PR2b + PR3.
 ```
