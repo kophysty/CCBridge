@@ -1046,6 +1046,70 @@ def test_skip_marker_with_modified_session_id_invalidates_signature(
     assert not marker_path.exists()
 
 
+def test_skip_marker_replay_after_consume_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Audit-2 High: an attacker with workspace write-access could copy
+    a valid signed marker during a legitimate [skip-review] turn, wait
+    for Stop hook to consume the original, then restore the copy and
+    skip again in the same session.
+
+    Defense: Stop hook records consumed signatures in a nonce store
+    OUTSIDE the workspace (~/.ccbridge/skip-review.consumed.jsonl).
+    Replays of the same signature are rejected.
+    """
+    _seed_user_home_with_secret(monkeypatch, tmp_path)
+    repo = _make_repo(tmp_path)
+    marker_path = _write_signed_marker(repo, session_id="sess-X")
+
+    # Snapshot the marker for "replay" simulation.
+    snapshot = marker_path.read_text(encoding="utf-8")
+
+    # First Stop turn — legitimate skip.
+    def must_not_run_first(**kwargs: Any) -> OrchestratorOutcome:
+        raise AssertionError("first Stop should skip on valid marker")
+
+    monkeypatch.setattr(
+        "ccbridge.transports.stop_hook.run_audit_with_config",
+        must_not_run_first,
+    )
+    result1 = _run_hook(
+        monkeypatch,
+        capsys,
+        stdin={
+            "stop_hook_active": False,
+            "cwd": str(repo),
+            "session_id": "sess-X",
+        },
+        project_dir=repo,
+    )
+    assert result1.exit_code == 0
+    assert not marker_path.exists()  # consumed
+
+    # Attacker restores the same marker. Replay attempt.
+    marker_path.write_text(snapshot, encoding="utf-8")
+
+    # Second Stop turn — must REJECT and run audit normally.
+    captured = _stub_outcome_capturing(monkeypatch, _make_outcome("pass"))
+
+    result2 = _run_hook(
+        monkeypatch,
+        capsys,
+        stdin={
+            "stop_hook_active": False,
+            "cwd": str(repo),
+            "session_id": "sess-X",
+        },
+        project_dir=repo,
+    )
+    assert result2.exit_code == 0
+    assert captured["flag"] is True, "replayed marker must trigger audit"
+    # Replayed marker file is removed (poisoned).
+    assert not marker_path.exists()
+
+
 def test_skip_marker_consume_failure_falls_through_to_audit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

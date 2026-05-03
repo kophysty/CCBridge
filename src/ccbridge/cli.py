@@ -964,19 +964,55 @@ def _patch_settings_json(
             new_form_marker_for[event_name],
             legacy_marker_for[event_name],
         )
-        # Strip prior ccbridge entries (new + legacy) before appending
-        # the canonical one. This handles: --force rebuild, legacy
-        # upgrade, and accidental duplicates.
-        bucket[:] = [
-            entry
-            for entry in bucket
-            if not isinstance(entry, dict)
-            or not _entry_matches_markers(entry, markers)
-        ]
+        # Strip prior ccbridge commands (new + legacy) at the NESTED
+        # level — never drop a parent entry that still has user hooks
+        # in it (audit-2 Blocker #1, 2026-05-03). Symmetric to the
+        # uninstall path; both share the "preserve co-located user
+        # commands" invariant.
+        _strip_subcommand_from_bucket(bucket, markers)
         bucket.append(_build_hook_entry(subcommand))
 
     _atomic_write_json(settings_path, existing)
     return True, backed_up
+
+
+def _strip_subcommand_from_bucket(
+    bucket: list[Any], markers: tuple[str, ...]
+) -> None:
+    """Remove ccbridge commands (matching ``markers``) from a single
+    event's bucket, drilling into each entry's nested ``hooks`` list.
+
+    Drops parent entries that become hook-less. Preserves entries that
+    retain at least one user command. Mutates ``bucket`` in place.
+
+    This is the per-event sibling of :func:`_strip_ccbridge_from_hooks_dict`
+    (which loops over all events). Used by the patch path during init
+    so we can independently rebuild each event without disturbing the
+    others.
+    """
+    survivors: list[Any] = []
+    for entry in bucket:
+        if not isinstance(entry, dict):
+            survivors.append(entry)
+            continue
+        nested = entry.get("hooks")
+        if not isinstance(nested, list):
+            survivors.append(entry)
+            continue
+        kept = [
+            h
+            for h in nested
+            if not (
+                isinstance(h, dict)
+                and any(marker in (h.get("command") or "") for marker in markers)
+            )
+        ]
+        if not kept:
+            # Entry contained ONLY our commands — drop it entirely.
+            continue
+        entry["hooks"] = kept
+        survivors.append(entry)
+    bucket[:] = survivors
 
 
 def _entry_matches_markers(

@@ -623,6 +623,121 @@ def test_legacy_init_then_uninstall_does_not_restore_legacy_entry(
         )
 
 
+def test_init_preserves_user_hook_in_same_entry_as_ccbridge_legacy(
+    tmp_path: Path,
+) -> None:
+    """Audit-2 Blocker #1 (2026-05-03 second round).
+
+    A pre-existing settings.json contains a single Stop entry whose
+    nested ``hooks`` list mixes a user command AND a legacy bare
+    ``ccbridge stop-hook``. ``init`` must:
+
+      - upgrade the legacy ccbridge command to the absolute-path form
+      - PRESERVE the user's command in the same entry
+
+    Previous patch path filtered at the top-level entry, dropping the
+    whole entry (and the user's hook with it). Symmetric to Blocker #4
+    of the first audit, but on the init/patch side, not uninstall.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    claude_dir = project / ".claude"
+    claude_dir.mkdir()
+    settings_path = claude_dir / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "matcher": "*",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "their-tool --keep",
+                                },
+                                {
+                                    "type": "command",
+                                    "command": "ccbridge stop-hook",
+                                },
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    runner.invoke(cli, ["init", str(project)])
+
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    cmds: list[str] = []
+    for entry in data["hooks"]["Stop"]:
+        for hook in entry.get("hooks", []):
+            cmds.append(hook.get("command", ""))
+
+    # User's command must survive.
+    assert any("their-tool --keep" in c for c in cmds), (
+        f"user hook lost during init: {cmds}"
+    )
+    # CCBridge upgraded to absolute path (no bare 'ccbridge stop-hook'
+    # remains; sys.executable form is present).
+    assert any(sys.executable in c for c in cmds), (
+        f"ccbridge not upgraded to absolute path: {cmds}"
+    )
+    bare = [c for c in cmds if c.strip() == "ccbridge stop-hook"]
+    assert not bare, f"legacy bare command still present: {bare}"
+
+
+def test_init_force_preserves_user_hook_in_same_entry(
+    tmp_path: Path,
+) -> None:
+    """Same as above but with --force. The flag must not be a license to
+    nuke co-located user commands.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    claude_dir = project / ".claude"
+    claude_dir.mkdir()
+    settings_path = claude_dir / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "matcher": "*",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "their-tool --keep",
+                                },
+                                {
+                                    "type": "command",
+                                    "command": "ccbridge stop-hook",
+                                },
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    runner.invoke(cli, ["init", str(project), "--force"])
+
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    cmds: list[str] = []
+    for entry in data["hooks"]["Stop"]:
+        for hook in entry.get("hooks", []):
+            cmds.append(hook.get("command", ""))
+    assert any("their-tool --keep" in c for c in cmds)
+
+
 def test_backup_does_not_contain_ccbridge_markers(tmp_path: Path) -> None:
     """The .ccbridge.bak file itself must never contain CCBridge entries
     — even if the source settings.json did. Backup must reflect a

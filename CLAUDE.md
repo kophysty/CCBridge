@@ -111,13 +111,16 @@ with code in this repository.
 **CCBridge** — Python CLI tool для автоматизации peer-review между
 Claude Code CLI и OpenAI Codex CLI.
 
-**Текущая версия:** v0.0.3-draft (PR1 + PR2a + audit fixes in main)
-**Текущая фаза:** PR2b — renderers + transports + cli
+**Текущая версия:** v0.0.3-draft (PR1 + PR2a + PR2b shipped в main)
+**Текущая фаза:** PR2c этап 1.5 — skip-review + audit fixes (на ветке)
 
 **Архитектура:** [`ARCHITECTURE.md`](ARCHITECTURE.md)
+**Capabilities:** [`Projects/00-strategy/product-capabilities.md`](Projects/00-strategy/product-capabilities.md)
 
-**Status: ACTIVE** — PR1 + PR2a + audit fixes shipped в main
-(commit 61dfbc5). Идёт PR2b: renderers + transports + cli.
+**Status: ACTIVE** — PR1 + PR2a + PR2b shipped в main (последний
+shipped commit 61dfbc5). На ветке `pr2b/transports-cli` идёт
+PR2c этап 1.5: skip-review feature + закрытие 11 audit findings
+(2 раунда). Финальный аудит → merge → v0.1.0.
 
 ---
 
@@ -126,17 +129,23 @@ Claude Code CLI и OpenAI Codex CLI.
 См. [`ROADMAP.md`](ROADMAP.md) — секция Active.
 
 ```
-  v0.1-PR2b   renderers + transports + cli           🚧 Active
-              + integration + e2e tests              Plan: Projects/v0.1-mvp/
-                                                       PR2-plan.md §PR2b
+  v0.1-PR2c   skip-review + UserPromptSubmit hook +    🚧 Active
+              audit fixes (2 раунда: 8 + 3 finds)      Plan: Discovery/logs/
+                                                        2026-05-03-pr2c-
+                                                        checkpoint.md +
+                                                        decisions.md
+                                                        «Plan A confirmed»
 
-                                                     Trigger: ✅ Audit OK,
-                                                      fix-spike merged
-                                                      (61dfbc5).
-                                                     Acceptance: AC-1, AC-2,
-                                                      AC-5..AC-8, AC-10,
-                                                      AC-15, полный AC-21.
-                                                      MVP end-to-end.
+                                                      Trigger в работу:
+                                                       ✅ PR2b shipped
+                                                       ✅ 11 finds closed
+                                                          (включая audit-2
+                                                          replay + nested
+                                                          patch filter)
+
+                                                      Trigger выхода:
+                                                       📋 финальный аудит
+                                                       → merge → v0.1.0
 ```
 
 ---

@@ -45,6 +45,24 @@
 
 ### Added (Unreleased)
 
+- 2026-05-03 — **PR2c этап 1.5 раунд 2** — закрытие 3 audit-2
+  findings (повторный аудит после раунда 1):
+  - **Audit-2 Blocker #1** (init top-level filter теряет user hook
+    в mixed entry): `_strip_subcommand_from_bucket()` — nested-level
+    фильтрация commands в bucket per event, симметрично uninstall'у.
+    `_patch_settings_json()` теперь сохраняет user commands в том
+    же entry при upgrade legacy ccbridge → absolute path. +2 теста.
+  - **Audit-2 High** (replay attack: marker snapshot + restore после
+    legitimate consume): consumed-nonce store
+    `~/.ccbridge/skip-review.consumed.jsonl` (вне workspace).
+    `_record_signature_or_detect_replay()` валидирует уникальность
+    signature перед consume; replays rejected + cleanup. Auto-prune
+    expired entries. Fail-CLOSED на errors. +1 e2e replay test.
+  - **Audit-2 Docs**: `product-capabilities.md` + `CLAUDE.md` под
+    текущее состояние (PR2c этап 1.5, 11 finds closed, 353 теста).
+  Метрики: 353 теста (+3), ruff/mypy clean. Auditor repro
+  (mixed entry → THEIR_TOOL_KEPT, CCBRIDGE_UPGRADED, LEGACY_REMOVED).
+
 - 2026-05-03 — **PR2c этап 1.5** — закрытие 8 audit findings от
   повторного аудита PR2c этапа 1. Все blocker'ы и issues fixed:
   - **Blocker #1** (`prompt_hook` ignored `config.review.skip_marker`):

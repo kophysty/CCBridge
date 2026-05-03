@@ -68,6 +68,7 @@ CCBRIDGE_DIR_NAME = ".ccbridge"
 SKIP_MARKER_FILENAME = "skip-review.json"
 SKIP_MARKER_TTL = timedelta(minutes=30)
 SKIP_MARKER_CLOCK_SKEW = timedelta(seconds=5)  # tolerate small clock drift
+CONSUMED_NONCE_FILENAME = "skip-review.consumed.jsonl"
 
 
 def stop_hook_main() -> int:
@@ -288,12 +289,129 @@ def _check_skip_marker(project_dir: Path, payload: dict[str, Any]) -> bool:
         _try_unlink(skip_path)
         return False
 
+    # Replay protection (audit-2 High, 2026-05-03): even though the
+    # signature is valid, an attacker with workspace-write may have
+    # snapshotted the marker file during a legitimate [skip-review]
+    # turn and restored it after we consumed the original. The nonce
+    # store lives in user home (outside workspace) so a workspace-only
+    # attacker cannot delete the consumed-record either.
+    signature = data.get("signature", "")
+    created_at_iso = data.get("created_at", "")
+    if isinstance(signature, str) and isinstance(created_at_iso, str):
+        if not _record_signature_or_detect_replay(
+            signature=signature, created_at=created_at_iso
+        ):
+            _emit_diagnostic(
+                "stop_hook: skip-marker replay detected; rejecting"
+            )
+            _try_unlink(skip_path)
+            return False
+
     # Match. Consume MUST succeed before we trust the skip — otherwise
     # the marker stays on disk and is reusable on the next Stop turn,
     # potentially bypassing audit indefinitely (audit High #5).
     if not _consume_marker(skip_path):
         return False
     return True
+
+
+def _consumed_nonce_path() -> Path:
+    """Path to the user-home consumed-nonce store.
+
+    Lives next to the user-home secret, in ``~/.ccbridge/``. Keeping it
+    outside the project workspace is THE point: a workspace-write
+    attacker can copy a marker but cannot delete records of consumed
+    signatures from user home.
+    """
+    return Path.home() / CCBRIDGE_DIR_NAME / CONSUMED_NONCE_FILENAME
+
+
+def _record_signature_or_detect_replay(
+    *, signature: str, created_at: str
+) -> bool:
+    """Append signature to consumed-nonce store unless it's already there.
+
+    Returns True if we successfully recorded a fresh signature (caller
+    proceeds with skip). Returns False if the same signature already
+    exists in the store within its TTL — that is a replay.
+
+    The store is JSONL so concurrent writes append cleanly; it self-
+    prunes expired records on every call (TTL = SKIP_MARKER_TTL plus
+    a safety margin so we never forget a signature *before* the marker
+    itself would have expired).
+
+    On any internal error (file unreadable, etc.) we fail-CLOSED:
+    return False, run audit. Better one extra audit than a bypass.
+    """
+    try:
+        path = _consumed_nonce_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        retention = SKIP_MARKER_TTL + SKIP_MARKER_CLOCK_SKEW
+        now = datetime.now(UTC)
+        cutoff = now - retention
+
+        existing: list[dict[str, Any]] = []
+        if path.exists():
+            try:
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(rec, dict):
+                        continue
+                    rec_created = rec.get("created_at", "")
+                    try:
+                        rec_dt = datetime.fromisoformat(rec_created)
+                    except (TypeError, ValueError):
+                        continue
+                    if rec_dt.tzinfo is None:
+                        rec_dt = rec_dt.replace(tzinfo=UTC)
+                    if rec_dt < cutoff:
+                        continue  # expired — drop on rewrite
+                    existing.append(rec)
+            except OSError as exc:
+                _emit_diagnostic(
+                    f"stop_hook: nonce store unreadable: {exc}"
+                )
+                return False
+
+        # Replay check.
+        for rec in existing:
+            if rec.get("signature") == signature:
+                return False
+
+        # Append our record. We rewrite the file (with pruning applied)
+        # rather than appending raw — this keeps the store bounded.
+        existing.append({"signature": signature, "created_at": created_at})
+        serialized = "\n".join(
+            json.dumps(rec, ensure_ascii=False) for rec in existing
+        ) + "\n"
+
+        import tempfile
+
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".consumed-", suffix=".tmp", dir=str(path.parent)
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(serialized)
+            os.replace(tmp_name, path)
+        except OSError as exc:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            _emit_diagnostic(f"stop_hook: nonce store write failed: {exc}")
+            return False
+        return True
+    except Exception as exc:  # pragma: no cover — defensive
+        _emit_diagnostic(f"stop_hook: nonce store error: {exc}")
+        return False
 
 
 def _try_unlink(path: Path) -> None:

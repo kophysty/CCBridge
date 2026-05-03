@@ -115,8 +115,10 @@ audit-finding'ами · `⏳` в процессе текущей версии ·
                   live-tail во втором терминале.
   Config          TOML с иерархией global → project, BOM strip, type
                   validation. include_rules с auto-detect literal/glob.
-                  Skip-review fields (но см. open audit findings).
-  Tests           323 теста (107 unit + 216 integration), coverage ~91%,
+                  Skip-review (config.skip_marker, signed via HMAC,
+                  replay-resistant через consumed-nonce store вне
+                  workspace). Trivial-diff threshold (off by default).
+  Tests           353 теста (107 unit + 246 integration), coverage ~91%,
                   ruff/mypy strict clean, e2e тесты (3 opt-in).
   Methodology     Rulebook 8 правил, ROADMAP, 2 ADR, Discovery/logs
                   для нарратива, handoffs/checkpoints для cross-session.
@@ -124,35 +126,47 @@ audit-finding'ами · `⏳` в процессе текущей версии ·
 
 ---
 
-## 3. Open audit findings (не пускают в v0.1.0 release)
+## 3. Audit findings (history → все закрыты на 2026-05-03)
 
-На 2026-05-03 PR2c этап 1 находится под повторным аудитом:
+Два раунда повторного аудита PR2c → 11 findings в сумме, все
+закрыты до финального аудита перед v0.1.0:
 
 ```
-  ID         Severity    Описание                                   Status
-  ─────────  ──────────  ─────────────────────────────────────────  ─────────
-  Blocker 1  Critical     prompt_hook игнорирует config.skip_marker   📋 to fix
-                          — использует только default `[skip-review]`
-  Blocker 2  Critical     Marker file в writable workspace —         📋 to fix
-   security                любой процесс с write-доступом может       (требует
-                          подделать marker и обойти audit             перепроект.)
-  Blocker 3  Critical     Backup poison: init→init --force →         📋 to fix
-                          uninstall оставляет CCBridge entries в
-                          restored backup
-  Blocker 4  Critical     uninstall удаляет весь parent entry        📋 to fix
-                          settings.json, теряя пользовательские
-                          hooks в том же entry
-  High 5     High         consume не обязателен — unlink fail        📋 to fix
-                          → marker reusable
-  Medium 6   Medium       future timestamp проходит TTL              📋 to fix
-   (clock-skew)
-  Minor 7    Low          shell quoting только пробелы (нужен        📋 to fix
-                          shlex.quote/list2cmdline)
-  Minor 8    Low          docstring stop_hook stale (skipped         📋 to fix
-                          → continue:false устарело)
+  Раунд        ID                 Severity    Что чинит fix          Status
+  ───────────  ─────────────────  ──────────  ─────────────────────  ─────────
+  Audit-1      Blocker #1          Critical    config.skip_marker     ✅ closed
+  (8 finds)                                    через load_config
+                Blocker #2 sec     Critical    HMAC-SHA256 signing,   ✅ closed
+                                                secret в user home
+                Blocker #3          Critical    Backup sanitization     ✅ closed
+                                                (CCBridge-free)
+                Blocker #4          Critical    Nested hooks filter     ✅ closed
+                                                (preserve user hooks
+                                                в uninstall)
+                High #5             High         Consume must succeed    ✅ closed
+                                                before True
+                Medium #6           Medium       Clock-skew check        ✅ closed
+                                                (future timestamp)
+                Minor #7            Low          shlex.quote /           ✅ closed
+                                                list2cmdline
+                Minor #8            Low          stop_hook docstring     ✅ closed
+                                                refresh
+  ───────────  ─────────────────  ──────────  ─────────────────────  ─────────
+  Audit-2      Blocker #1          Critical    Symmetric nested        ✅ closed
+  (3 finds)                                    filter в _patch
+                                                (init теперь сохраняет
+                                                user hooks в same
+                                                entry — было только
+                                                в uninstall)
+                High #2             High         Consumed-nonce store    ✅ closed
+                                                (~/.ccbridge/skip-
+                                                review.consumed.jsonl)
+                                                — replay protection
+                Docs #3             Low          Этот документ +         ✅ closed
+                                                CLAUDE.md обновлены
 ```
 
-После закрытия — повторный аудит, потом merge в main.
+Финальный аудит → merge → v0.1.0 release.
 
 ---
 
