@@ -79,7 +79,7 @@ def _stub_outcome(
         return outcome
 
     monkeypatch.setattr(
-        "ccbridge.transports.stop_hook.run_audit", fake_run_audit
+        "ccbridge.transports.stop_hook.run_audit_with_config", fake_run_audit
     )
 
 
@@ -191,7 +191,7 @@ def test_stop_hook_active_true_is_noop(
         raise AssertionError("run_audit must not be called when stop_hook_active=true")
 
     monkeypatch.setattr(
-        "ccbridge.transports.stop_hook.run_audit", must_not_run
+        "ccbridge.transports.stop_hook.run_audit_with_config", must_not_run
     )
 
     repo = tmp_path
@@ -225,7 +225,7 @@ def test_project_root_from_claude_project_dir_env(
         captured_kwargs.update(kwargs)
         return _make_outcome("pass")
 
-    monkeypatch.setattr("ccbridge.transports.stop_hook.run_audit", capture)
+    monkeypatch.setattr("ccbridge.transports.stop_hook.run_audit_with_config", capture)
 
     result = _run_hook(
         monkeypatch,
@@ -253,7 +253,7 @@ def test_project_root_falls_back_to_cwd_when_env_missing(
         captured_kwargs.update(kwargs)
         return _make_outcome("pass")
 
-    monkeypatch.setattr("ccbridge.transports.stop_hook.run_audit", capture)
+    monkeypatch.setattr("ccbridge.transports.stop_hook.run_audit_with_config", capture)
 
     result = _run_hook(
         monkeypatch,
@@ -279,7 +279,7 @@ def test_project_root_invalid_returns_fail_open_zero_exit(
         raise AssertionError("run_audit must not be called")
 
     monkeypatch.setattr(
-        "ccbridge.transports.stop_hook.run_audit", must_not_run
+        "ccbridge.transports.stop_hook.run_audit_with_config", must_not_run
     )
 
     result = _run_hook(
@@ -440,7 +440,7 @@ def test_lock_busy_emits_continue_false_not_block(
     def lock_busy(**kwargs: Any) -> OrchestratorOutcome:
         raise LockBusyError(holder)
 
-    monkeypatch.setattr("ccbridge.transports.stop_hook.run_audit", lock_busy)
+    monkeypatch.setattr("ccbridge.transports.stop_hook.run_audit_with_config", lock_busy)
 
     result = _run_hook(
         monkeypatch,
@@ -479,7 +479,7 @@ def test_malformed_stdin_json_fails_open(
         raise AssertionError("run_audit must not be called on malformed input")
 
     monkeypatch.setattr(
-        "ccbridge.transports.stop_hook.run_audit", must_not_run
+        "ccbridge.transports.stop_hook.run_audit_with_config", must_not_run
     )
 
     exit_code = stop_hook_main()
@@ -503,7 +503,7 @@ def test_orchestrator_unexpected_exception_fails_open(
     def boom(**kwargs: Any) -> OrchestratorOutcome:
         raise RuntimeError("unexpected internal error")
 
-    monkeypatch.setattr("ccbridge.transports.stop_hook.run_audit", boom)
+    monkeypatch.setattr("ccbridge.transports.stop_hook.run_audit_with_config", boom)
 
     result = _run_hook(
         monkeypatch,

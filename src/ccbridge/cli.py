@@ -25,7 +25,6 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import uuid
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -57,8 +56,14 @@ from ccbridge.core.events import (  # noqa: E402
     VerdictEvent,
 )
 from ccbridge.core.lockfile import LockBusyError, LockHolder  # noqa: E402
-from ccbridge.core.orchestrator import OrchestratorOutcome, run_audit  # noqa: E402
+from ccbridge.core.orchestrator import OrchestratorOutcome  # noqa: E402
 from ccbridge.renderers.rich_renderer import RichRenderer  # noqa: E402
+from ccbridge.transports.audit_invoker import (  # noqa: E402
+    resolve_include_rules as _resolve_include_rules,
+)
+from ccbridge.transports.audit_invoker import (  # noqa: E402
+    run_audit_with_config as _run_audit_with_config_impl,
+)
 from ccbridge.transports.audit_watch import watch_audit_log  # noqa: E402
 from ccbridge.transports.stop_hook import stop_hook_main  # noqa: E402
 
@@ -192,6 +197,34 @@ def cli() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Shared run_audit invocation with config + identity propagation
+# ---------------------------------------------------------------------------
+
+
+def _run_audit_with_config(
+    *,
+    project_dir: Path,
+    ccbridge_dir: Path,
+    bus: EventBus,
+    cli_mode: bool,
+) -> OrchestratorOutcome:
+    """Thin wrapper that delegates to the shared invoker.
+
+    Kept as a module-level function in cli.py for testability:
+    ``cli`` consumers and tests can monkeypatch ``cli._run_audit_with_config``
+    rather than reaching into ``transports/audit_invoker``. The actual
+    logic lives in ``transports/audit_invoker.run_audit_with_config``
+    so the Stop hook uses the same code path.
+    """
+    return _run_audit_with_config_impl(
+        project_dir=project_dir,
+        ccbridge_dir=ccbridge_dir,
+        bus=bus,
+        cli_mode=cli_mode,
+    )
+
+
+# ---------------------------------------------------------------------------
 # `audit` subgroup
 # ---------------------------------------------------------------------------
 
@@ -229,11 +262,11 @@ def audit_run(project_opt: str | None, as_json: bool) -> None:
         bus.subscribe(RichRenderer(file=sys.stderr))
 
     try:
-        outcome = run_audit(
+        outcome = _run_audit_with_config(
             project_dir=project,
             ccbridge_dir=ccbridge_dir,
             bus=bus,
-            run_uuid=str(uuid.uuid4()),
+            cli_mode=True,
         )
     except LockBusyError as exc:
         _print_stderr(
@@ -1042,7 +1075,7 @@ def _print_stderr(message: str) -> None:
     sys.stderr.flush()
 
 
-__all__ = ("cli",)
+__all__ = ("_resolve_include_rules", "cli")
 
 
 if __name__ == "__main__":

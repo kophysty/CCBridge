@@ -43,8 +43,9 @@ from typing import Any
 
 from ccbridge.core.event_bus import EventBus
 from ccbridge.core.lockfile import LockBusyError
-from ccbridge.core.orchestrator import OrchestratorOutcome, run_audit
+from ccbridge.core.orchestrator import OrchestratorOutcome
 from ccbridge.renderers.rich_renderer import RichRenderer
+from ccbridge.transports.audit_invoker import run_audit_with_config
 
 logger = logging.getLogger(__name__)
 
@@ -172,9 +173,10 @@ def _resolve_project_dir(payload: dict[str, Any]) -> Path | None:
 
 def _run_audit_for_hook(project_dir: Path) -> OrchestratorOutcome:
     """Wire up an EventBus with a stderr-only RichRenderer and call
-    run_audit. RichRenderer is best-effort diagnostics for any humans
-    watching the terminal; orchestrator owns audit.jsonl persistence
-    independently (ADR-002).
+    run_audit through the shared invoker, which also reads config.toml
+    + identity.json (audit Major #2 fix). ``cli_mode=False`` means
+    a malformed config produces a stderr warning + defaults fallback,
+    not a crash — Stop hook is fail-open.
 
     NB: stdout MUST stay clean for the decision JSON. RichRenderer is
     explicitly bound to stderr.
@@ -182,10 +184,11 @@ def _run_audit_for_hook(project_dir: Path) -> OrchestratorOutcome:
     bus = EventBus()
     bus.subscribe(RichRenderer(file=sys.stderr))
 
-    return run_audit(
+    return run_audit_with_config(
         project_dir=project_dir,
         ccbridge_dir=project_dir / CCBRIDGE_DIR_NAME,
         bus=bus,
+        cli_mode=False,
         run_uuid=str(uuid.uuid4()),
     )
 
