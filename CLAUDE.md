@@ -11,9 +11,13 @@ with code in this repository.
   `Discovery/logs/*-handoff-*.md` или `*-checkpoint-*.md` (по mtime)
   если есть. Это точка синхронизации с предыдущими сессиями.
   **Текущий актуальный handoff:**
-  [`Discovery/logs/2026-05-02-handoff-pr2a-audit.md`](Discovery/logs/2026-05-02-handoff-pr2a-audit.md)
-  (audit closed, fix-spike merged 61dfbc5, идёт PR2b).
-  Предыдущий: [`2026-05-02-handoff-pr1-to-pr2.md`](Discovery/logs/2026-05-02-handoff-pr1-to-pr2.md).
+  [`Discovery/logs/2026-05-03-pr2c-checkpoint.md`](Discovery/logs/2026-05-03-pr2c-checkpoint.md)
+  (PR2c этап 1: Major #1/#2/#3 closed, Minor #4 + skip-review +
+  Stop hook fix #6 pending; ветка pr2b/transports-cli, HEAD
+  83a6d5b, 291 passed).
+  Предыдущие: [`2026-05-03-pr2b-audit-findings.md`](Discovery/logs/2026-05-03-pr2b-audit-findings.md),
+  [`2026-05-02-handoff-pr2a-audit.md`](Discovery/logs/2026-05-02-handoff-pr2a-audit.md),
+  [`2026-05-02-handoff-pr1-to-pr2.md`](Discovery/logs/2026-05-02-handoff-pr1-to-pr2.md).
 - **⭐ [`ROADMAP.md`](ROADMAP.md)** — **ВТОРОЕ ЧТО ЧИТАТЬ.** Единый
   реестр планов и версий: что делаем сейчас (Active), что следующее
   (Queued), что отложено (Pending), что уже в production (Shipped).
