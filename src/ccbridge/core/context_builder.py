@@ -122,6 +122,7 @@ def build_context(
     run_uuid: str,
     rules_paths: tuple[Path, ...] = (),
     max_diff_lines: int = 2000,
+    min_diff_lines: int = 0,
     recent_audits: list[VerdictEvent] | None = None,
     recent_audits_limit: int = DEFAULT_RECENT_AUDITS,
 ) -> BuiltContext | ContextSkipped:
@@ -158,6 +159,15 @@ def build_context(
     diff_lines = sum(item.added + item.deleted for item in text_items)
     if diff_lines > max_diff_lines:
         raise ContextTooLargeError(diff_lines=diff_lines, limit=max_diff_lines)
+
+    # Trivial-diff skip: if the diff is at or below the configured
+    # threshold, short-circuit before invoking Codex. ``min_diff_lines=0``
+    # disables this entirely (default).
+    if min_diff_lines > 0 and diff_lines <= min_diff_lines:
+        return ContextSkipped(
+            reason="trivial_diff",
+            detail=f"{diff_lines} changed line(s) ≤ threshold {min_diff_lines}",
+        )
 
     diff_text = _git_diff(project_dir)
     snapshot_sha = _git_stash_create(project_dir)

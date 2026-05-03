@@ -262,6 +262,40 @@ include_rules = []
     assert outcome["final_verdict"] == "needs_human"
 
 
+def test_audit_run_skips_when_diff_below_skip_trivial_threshold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: with skip_trivial_diff_max_lines=5 in config and a
+    2-line diff, audit run skips Codex entirely and the JSON outcome
+    reports final_verdict=skipped.
+    """
+    config = """
+[project]
+name = "p"
+
+[review]
+skip_trivial_diff_max_lines = 5
+"""
+    repo = _make_initialized_repo(tmp_path, config_toml=config)
+
+    # The repo has one 2-line change (x=1 → x=2 in a.py).
+    # Codex must NEVER be called.
+    def must_not_call_codex(*args: Any, **kwargs: Any) -> CodexRunResult:
+        raise AssertionError("Codex should not be invoked when diff is below threshold")
+
+    monkeypatch.setattr(
+        "ccbridge.core.orchestrator.run_codex", must_not_call_codex
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["audit", "run", "--project", str(repo), "--json"]
+    )
+    assert result.exit_code == 0, result.stdout
+    outcome = json.loads(result.stdout)
+    assert outcome["final_verdict"] == "skipped"
+
+
 # ---------------------------------------------------------------------------
 # include_rules — auto-detect literal/glob
 # ---------------------------------------------------------------------------

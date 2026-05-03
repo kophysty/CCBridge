@@ -21,6 +21,7 @@ Decisions per audit feedback:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -262,12 +263,17 @@ def test_init_preserves_unrelated_settings_keys(tmp_path: Path) -> None:
 
 
 def test_init_creates_settings_backup(tmp_path: Path) -> None:
-    """Backup .claude/settings.json.ccbridge.bak with the original content."""
+    """Backup .claude/settings.json.ccbridge.bak preserves the original
+    user content (after sanitization — see Blocker #3 fix). User-only
+    keys must survive verbatim; CCBridge-related keys, if any, are
+    stripped before the backup is written.
+    """
     project = tmp_path / "proj"
     project.mkdir()
     claude_dir = project / ".claude"
     claude_dir.mkdir()
-    original = {"model": "x", "hooks": {}}
+    # Note: pre-CCBridge state with a user-only top-level key.
+    original = {"model": "claude-3-opus"}
     (claude_dir / "settings.json").write_text(
         json.dumps(original), encoding="utf-8"
     )
@@ -277,6 +283,7 @@ def test_init_creates_settings_backup(tmp_path: Path) -> None:
 
     backup = claude_dir / "settings.json.ccbridge.bak"
     assert backup.exists()
+    # User content fully preserved; CCBridge entries (none here) excluded.
     assert json.loads(backup.read_text(encoding="utf-8")) == original
 
 
@@ -408,6 +415,259 @@ def test_init_idempotent_does_not_duplicate_stop_hook_entry(
 
 
 # ---------------------------------------------------------------------------
+# UserPromptSubmit hook (substep 5e)
+# ---------------------------------------------------------------------------
+
+
+def test_init_creates_user_prompt_submit_hook_entry(tmp_path: Path) -> None:
+    """init must add a UserPromptSubmit entry alongside the Stop entry,
+    so the prompt-hook subcommand sees the user's [skip-review] marker.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    runner = CliRunner()
+    runner.invoke(cli, ["init", str(project)])
+
+    data = json.loads(
+        (project / ".claude" / "settings.json").read_text(encoding="utf-8")
+    )
+    assert "UserPromptSubmit" in data["hooks"]
+    entries = data["hooks"]["UserPromptSubmit"]
+    assert isinstance(entries, list)
+    assert len(entries) >= 1
+
+    # Must invoke ``... ccbridge.cli prompt-hook`` (not stop-hook).
+    found = False
+    for entry in entries:
+        for hook in entry.get("hooks", []):
+            cmd = hook.get("command", "")
+            if "prompt-hook" in cmd:
+                found = True
+                assert "ccbridge.cli prompt-hook" in cmd
+    assert found, f"no prompt-hook entry in {data}"
+
+
+def test_init_user_prompt_submit_hook_uses_absolute_python(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    runner = CliRunner()
+    runner.invoke(cli, ["init", str(project)])
+
+    data = json.loads(
+        (project / ".claude" / "settings.json").read_text(encoding="utf-8")
+    )
+    cmds = []
+    for entry in data["hooks"]["UserPromptSubmit"]:
+        for hook in entry.get("hooks", []):
+            cmds.append(hook.get("command", ""))
+    assert any(sys.executable in cmd for cmd in cmds), (
+        f"prompt-hook command should use sys.executable; got {cmds}"
+    )
+
+
+def test_init_idempotent_does_not_duplicate_user_prompt_submit_entry(
+    tmp_path: Path,
+) -> None:
+    """Double init must not add the prompt-hook entry twice."""
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    runner = CliRunner()
+    runner.invoke(cli, ["init", str(project)])
+    runner.invoke(cli, ["init", str(project)])
+
+    data = json.loads(
+        (project / ".claude" / "settings.json").read_text(encoding="utf-8")
+    )
+    count = 0
+    for entry in data["hooks"]["UserPromptSubmit"]:
+        for hook in entry.get("hooks", []):
+            if "prompt-hook" in hook.get("command", ""):
+                count += 1
+    assert count == 1
+
+
+def test_init_preserves_existing_user_prompt_submit_hooks(
+    tmp_path: Path,
+) -> None:
+    """If the user already has UserPromptSubmit entries (from another
+    tool), init must keep them and ADD ours alongside.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    claude_dir = project / ".claude"
+    claude_dir.mkdir()
+    settings_path = claude_dir / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "UserPromptSubmit": [
+                        {
+                            "matcher": "*",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "their-other-tool --foo",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    runner.invoke(cli, ["init", str(project)])
+
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    cmds = []
+    for entry in data["hooks"]["UserPromptSubmit"]:
+        for hook in entry.get("hooks", []):
+            cmds.append(hook.get("command", ""))
+    assert any("their-other-tool" in c for c in cmds)
+    assert any("prompt-hook" in c for c in cmds)
+
+
+# ---------------------------------------------------------------------------
+# Backup poisoning protection (Blocker #3)
+# ---------------------------------------------------------------------------
+# Repro: init -> init --force -> uninstall --yes leaves CCBridge entries
+# in the restored settings.json, because the second init created a
+# backup containing the *post-CCBridge* state. Fix: sanitize backup
+# content (strip our markers) before writing — the backup must always
+# represent a CCBridge-free settings.json.
+
+
+def test_force_init_then_uninstall_does_not_leave_ccbridge_entries(
+    tmp_path: Path,
+) -> None:
+    """Repro for audit Blocker #3.
+
+    init (creates fresh settings) → init --force (overwrite) →
+    uninstall --yes. The restored state must NOT contain any CCBridge
+    hooks; it should be pre-CCBridge state (or empty).
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    runner = CliRunner()
+    runner.invoke(cli, ["init", str(project)])
+    runner.invoke(cli, ["init", str(project), "--force"])
+    runner.invoke(cli, ["uninstall", str(project), "--yes"])
+
+    settings_path = project / ".claude" / "settings.json"
+    if settings_path.exists():
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        cmds: list[str] = []
+        for event_entries in data.get("hooks", {}).values():
+            if not isinstance(event_entries, list):
+                continue
+            for entry in event_entries:
+                for hook in entry.get("hooks", []):
+                    cmds.append(hook.get("command", ""))
+        assert not any("ccbridge" in c for c in cmds), (
+            f"CCBridge entries leaked through backup: {cmds}"
+        )
+
+
+def test_legacy_init_then_uninstall_does_not_restore_legacy_entry(
+    tmp_path: Path,
+) -> None:
+    """Pre-existing legacy settings.json with bare ccbridge stop-hook
+    entry. After init (which upgrades to absolute path) and uninstall,
+    the legacy entry must NOT come back via backup restore.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    claude_dir = project / ".claude"
+    claude_dir.mkdir()
+    legacy = {
+        "hooks": {
+            "Stop": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {"type": "command", "command": "ccbridge stop-hook"}
+                    ],
+                }
+            ]
+        }
+    }
+    (claude_dir / "settings.json").write_text(
+        json.dumps(legacy), encoding="utf-8"
+    )
+
+    runner = CliRunner()
+    runner.invoke(cli, ["init", str(project)])
+    runner.invoke(cli, ["uninstall", str(project), "--yes"])
+
+    settings_path = claude_dir / "settings.json"
+    if settings_path.exists():
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        cmds: list[str] = []
+        for event_entries in data.get("hooks", {}).values():
+            if not isinstance(event_entries, list):
+                continue
+            for entry in event_entries:
+                for hook in entry.get("hooks", []):
+                    cmds.append(hook.get("command", ""))
+        assert not any("ccbridge" in c.lower() for c in cmds), (
+            f"legacy entry leaked through backup: {cmds}"
+        )
+
+
+def test_backup_does_not_contain_ccbridge_markers(tmp_path: Path) -> None:
+    """The .ccbridge.bak file itself must never contain CCBridge entries
+    — even if the source settings.json did. Backup must reflect a
+    CCBridge-free state at all times.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    claude_dir = project / ".claude"
+    claude_dir.mkdir()
+    pre_ccbridge_with_legacy = {
+        "model": "x",
+        "hooks": {
+            "Stop": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {"type": "command", "command": "ccbridge stop-hook"}
+                    ],
+                }
+            ]
+        },
+    }
+    (claude_dir / "settings.json").write_text(
+        json.dumps(pre_ccbridge_with_legacy), encoding="utf-8"
+    )
+
+    runner = CliRunner()
+    runner.invoke(cli, ["init", str(project)])
+
+    backup = claude_dir / "settings.json.ccbridge.bak"
+    if backup.exists():
+        backup_data = json.loads(backup.read_text(encoding="utf-8"))
+        cmds: list[str] = []
+        for event_entries in backup_data.get("hooks", {}).values():
+            if not isinstance(event_entries, list):
+                continue
+            for entry in event_entries:
+                for hook in entry.get("hooks", []):
+                    cmds.append(hook.get("command", ""))
+        assert not any("ccbridge" in c.lower() for c in cmds), (
+            f"backup contains CCBridge markers: {cmds}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Rollback on settings patch failure
 # ---------------------------------------------------------------------------
 
@@ -422,7 +682,9 @@ def test_init_rollback_restores_settings_on_patch_failure(
     project.mkdir()
     claude_dir = project / ".claude"
     claude_dir.mkdir()
-    original = {"model": "claude-3-opus", "hooks": {"Stop": []}}
+    # Use a pre-CCBridge state without empty hooks dict, since backup
+    # sanitization (Blocker #3) drops empty hooks keys in the backup.
+    original = {"model": "claude-3-opus"}
     settings_path = claude_dir / "settings.json"
     settings_path.write_text(json.dumps(original), encoding="utf-8")
 
@@ -439,7 +701,7 @@ def test_init_rollback_restores_settings_on_patch_failure(
 
     # init reports failure with non-zero exit.
     assert result.exit_code != 0
-    # Settings restored to original content from backup.
+    # Settings restored to original content from (sanitized) backup.
     restored = json.loads(settings_path.read_text(encoding="utf-8"))
     assert restored == original
 

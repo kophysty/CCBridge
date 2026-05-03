@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -387,13 +388,22 @@ def test_error_outcome_emits_continue_false(
     assert "decision" not in parsed
 
 
-def test_skipped_outcome_emits_continue_false(
+def test_skipped_outcome_emits_empty_stdout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """skipped (empty/binary diff) — we don't block Claude, but we tell
-    the user via stopReason that no review happened.
+    """skipped (empty/binary diff, trivial-diff threshold, etc.) — Claude
+    proceeds to stop normally, we have no opinion.
+
+    Why empty stdout (not continue:false): a skipped review is a
+    legitimate non-event for Claude. ``continue:false`` is reserved for
+    *operational* problems that the user must resolve (lock busy,
+    error, needs_human). Skipping a trivial change is not such a
+    problem — we just don't have anything to say.
+
+    The CLI ``audit run`` path is unchanged: it still surfaces
+    ``final_verdict=skipped`` in the JSON outcome.
     """
     repo = _make_repo(tmp_path)
     _stub_outcome(monkeypatch, _make_outcome("skipped"))
@@ -405,9 +415,7 @@ def test_skipped_outcome_emits_continue_false(
         project_dir=repo,
     )
     assert result.exit_code == 0
-    parsed = _assert_stdout_is_empty_or_valid_json(result.stdout)
-    assert parsed is not None
-    assert parsed.get("continue") is False
+    assert _assert_stdout_is_empty_or_valid_json(result.stdout) is None
 
 
 # ---------------------------------------------------------------------------
@@ -569,3 +577,563 @@ def test_secrets_not_logged_to_stdout_or_stderr(
     )
     assert secret not in result.stdout
     assert secret not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Skip-review marker consumption (substep 5b)
+# ---------------------------------------------------------------------------
+# The UserPromptSubmit hook (transports/prompt_hook) writes
+# .ccbridge/skip-review.json when the user types [skip-review] in their
+# prompt. Stop hook must:
+#
+# * Consume marker (delete) when session_id matches AND created_at is
+#   within 30 minutes — short-circuit audit, return empty stdout.
+# * Ignore mismatched session_id (different turn — leave marker alone
+#   so the right Stop can pick it up).
+# * Treat expired marker (>30 min) as missing AND clean it up.
+# * Treat broken JSON / unreadable file as missing — fall through to
+#   normal audit path (fail-open) and write a stderr diagnostic.
+
+
+def _write_skip_marker(
+    repo: Path,
+    *,
+    session_id: str,
+    transcript_path: str = "/tmp/t.jsonl",
+    cwd: str = "/tmp/proj",
+    created_at: str | None = None,
+    marker: str = "[skip-review]",
+    raw: str | None = None,
+) -> Path:
+    """Write a fake skip-review marker file. If ``raw`` is given, write
+    that string verbatim (for testing broken JSON).
+    """
+    from datetime import UTC, datetime
+
+    ccbridge = repo / ".ccbridge"
+    ccbridge.mkdir(parents=True, exist_ok=True)
+    target = ccbridge / "skip-review.json"
+    if raw is not None:
+        target.write_text(raw, encoding="utf-8")
+        return target
+    data = {
+        "session_id": session_id,
+        "transcript_path": transcript_path,
+        "cwd": cwd,
+        "created_at": created_at or datetime.now(UTC).isoformat(),
+        "marker": marker,
+        "reason": "user_marker",
+    }
+    target.write_text(json.dumps(data), encoding="utf-8")
+    return target
+
+
+def test_skip_marker_matched_session_short_circuits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Marker matches stop_hook session_id → run_audit must NOT be
+    called, stdout empty, marker deleted.
+    """
+    repo = _make_repo(tmp_path)
+    marker_path = _write_skip_marker(repo, session_id="sess-X")
+
+    def must_not_run(**kwargs: Any) -> OrchestratorOutcome:
+        raise AssertionError("run_audit must not be called when marker matches")
+
+    monkeypatch.setattr(
+        "ccbridge.transports.stop_hook.run_audit_with_config", must_not_run
+    )
+
+    result = _run_hook(
+        monkeypatch,
+        capsys,
+        stdin={
+            "stop_hook_active": False,
+            "cwd": str(repo),
+            "session_id": "sess-X",
+        },
+        project_dir=repo,
+    )
+
+    assert result.exit_code == 0
+    assert _assert_stdout_is_empty_or_valid_json(result.stdout) is None
+    assert not marker_path.exists()  # consumed
+
+
+def test_skip_marker_mismatched_session_runs_audit_and_keeps_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Different session_id → run audit normally, marker is NOT consumed
+    (it belongs to a different turn).
+    """
+    repo = _make_repo(tmp_path)
+    marker_path = _write_skip_marker(repo, session_id="sess-OTHER")
+    _stub_outcome(monkeypatch, _make_outcome("pass"))
+
+    result = _run_hook(
+        monkeypatch,
+        capsys,
+        stdin={
+            "stop_hook_active": False,
+            "cwd": str(repo),
+            "session_id": "sess-X",
+        },
+        project_dir=repo,
+    )
+
+    assert result.exit_code == 0
+    assert _assert_stdout_is_empty_or_valid_json(result.stdout) is None
+    assert marker_path.exists()  # NOT consumed
+
+
+def test_skip_marker_future_timestamp_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Audit Medium #6: marker with created_at far in the future passes
+    the TTL check (negative age < 30 min). Even with a VALID signature,
+    we must reject it and clean up — a future timestamp indicates
+    either malicious crafting or severe clock skew, neither safe.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    _seed_user_home_with_secret(monkeypatch, tmp_path)
+    repo = _make_repo(tmp_path)
+    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    # Use signed-marker writer so the marker is otherwise valid; only
+    # the timestamp is in the future.
+    marker_path = _write_signed_marker(
+        repo, session_id="sess-X", created_at=future
+    )
+    captured = _stub_outcome_capturing(monkeypatch, _make_outcome("pass"))
+
+    result = _run_hook(
+        monkeypatch,
+        capsys,
+        stdin={
+            "stop_hook_active": False,
+            "cwd": str(repo),
+            "session_id": "sess-X",
+        },
+        project_dir=repo,
+    )
+    assert result.exit_code == 0
+    assert captured["flag"] is True, "future-dated marker must trigger audit"
+    assert not marker_path.exists()
+
+
+def test_skip_marker_small_clock_skew_still_accepted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A small clock skew (a few seconds in the future) should still
+    be accepted to be robust against time drift between writer and
+    reader processes. We allow ~5 seconds tolerance.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    _seed_user_home_with_secret(monkeypatch, tmp_path)
+    repo = _make_repo(tmp_path)
+    skewed = (datetime.now(UTC) + timedelta(seconds=2)).isoformat()
+    marker_path = _write_signed_marker(
+        repo, session_id="sess-X", created_at=skewed
+    )
+
+    def must_not_run(**kwargs: Any) -> OrchestratorOutcome:
+        raise AssertionError("small skew should still be accepted")
+
+    monkeypatch.setattr(
+        "ccbridge.transports.stop_hook.run_audit_with_config", must_not_run
+    )
+
+    result = _run_hook(
+        monkeypatch,
+        capsys,
+        stdin={
+            "stop_hook_active": False,
+            "cwd": str(repo),
+            "session_id": "sess-X",
+        },
+        project_dir=repo,
+    )
+    assert result.exit_code == 0
+    assert not marker_path.exists()  # consumed
+
+
+def test_skip_marker_expired_is_cleaned_and_audit_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Marker older than 30 min → ignore + delete + run audit normally."""
+    from datetime import UTC, datetime, timedelta
+
+    repo = _make_repo(tmp_path)
+    old = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    marker_path = _write_skip_marker(repo, session_id="sess-X", created_at=old)
+    _stub_outcome(monkeypatch, _make_outcome("pass"))
+
+    result = _run_hook(
+        monkeypatch,
+        capsys,
+        stdin={
+            "stop_hook_active": False,
+            "cwd": str(repo),
+            "session_id": "sess-X",
+        },
+        project_dir=repo,
+    )
+
+    assert result.exit_code == 0
+    assert not marker_path.exists()  # cleaned up
+
+
+def test_skip_marker_broken_json_falls_through_to_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Unparseable marker file → stderr warning, normal audit runs."""
+    repo = _make_repo(tmp_path)
+    _write_skip_marker(repo, session_id="sess-X", raw="{not valid json")
+    _stub_outcome(monkeypatch, _make_outcome("pass"))
+
+    result = _run_hook(
+        monkeypatch,
+        capsys,
+        stdin={
+            "stop_hook_active": False,
+            "cwd": str(repo),
+            "session_id": "sess-X",
+        },
+        project_dir=repo,
+    )
+
+    assert result.exit_code == 0
+    assert _assert_stdout_is_empty_or_valid_json(result.stdout) is None
+    assert result.stderr  # diagnostic about broken marker
+
+
+def test_skip_marker_no_session_id_in_input_runs_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """If Stop input has no session_id, marker can't be matched. Don't
+    skip — run audit normally, leave marker for whoever can match it.
+    """
+    repo = _make_repo(tmp_path)
+    marker_path = _write_skip_marker(repo, session_id="sess-X")
+    _stub_outcome(monkeypatch, _make_outcome("pass"))
+
+    result = _run_hook(
+        monkeypatch,
+        capsys,
+        stdin={"stop_hook_active": False, "cwd": str(repo)},
+        project_dir=repo,
+    )
+
+    assert result.exit_code == 0
+    assert marker_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# HMAC-signed marker validation (Blocker #2)
+# ---------------------------------------------------------------------------
+# Stop hook must reject markers without a valid HMAC signature against
+# the user-home secret. This prevents workspace-write attackers from
+# forging skip-review markers.
+
+
+def _seed_user_home_with_secret(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Path:
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    return home
+
+
+def _write_signed_marker(
+    repo: Path,
+    *,
+    session_id: str,
+    transcript_path: str = "/tmp/t.jsonl",
+    cwd: str = "/tmp/proj",
+    marker: str = "[skip-review]",
+    created_at: str | None = None,
+) -> Path:
+    """Write a marker the same way prompt_hook would: real HMAC signature
+    derived from the user-home secret (or a freshly created one).
+    """
+    from datetime import UTC, datetime
+
+    from ccbridge.transports.prompt_hook import (
+        _compute_signature,
+        _get_or_create_user_secret,
+    )
+
+    ccbridge = repo / ".ccbridge"
+    ccbridge.mkdir(parents=True, exist_ok=True)
+    target = ccbridge / "skip-review.json"
+    created = created_at or datetime.now(UTC).isoformat()
+    secret = _get_or_create_user_secret()
+    signature = _compute_signature(
+        secret,
+        session_id=session_id,
+        created_at=created,
+        transcript_path=transcript_path,
+        marker=marker,
+    )
+    data = {
+        "session_id": session_id,
+        "transcript_path": transcript_path,
+        "cwd": cwd,
+        "created_at": created,
+        "marker": marker,
+        "reason": "user_marker",
+        "signature": signature,
+    }
+    target.write_text(json.dumps(data), encoding="utf-8")
+    return target
+
+
+def test_skip_marker_with_valid_signature_short_circuits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Properly signed marker → audit skipped, marker consumed."""
+    _seed_user_home_with_secret(monkeypatch, tmp_path)
+    repo = _make_repo(tmp_path)
+    marker_path = _write_signed_marker(repo, session_id="sess-X")
+
+    def must_not_run(**kwargs: Any) -> OrchestratorOutcome:
+        raise AssertionError("audit must be skipped on valid signature")
+
+    monkeypatch.setattr(
+        "ccbridge.transports.stop_hook.run_audit_with_config", must_not_run
+    )
+
+    result = _run_hook(
+        monkeypatch,
+        capsys,
+        stdin={
+            "stop_hook_active": False,
+            "cwd": str(repo),
+            "session_id": "sess-X",
+        },
+        project_dir=repo,
+    )
+    assert result.exit_code == 0
+    assert _assert_stdout_is_empty_or_valid_json(result.stdout) is None
+    assert not marker_path.exists()
+
+
+def _stub_outcome_capturing(
+    monkeypatch: pytest.MonkeyPatch, outcome: OrchestratorOutcome
+) -> dict[str, bool]:
+    """Like _stub_outcome but captures whether run_audit was called.
+
+    Returns a mutable dict caller can assert on (``called["flag"]``).
+    """
+    state = {"flag": False}
+
+    def fake(**kwargs: Any) -> OrchestratorOutcome:
+        state["flag"] = True
+        return outcome
+
+    monkeypatch.setattr(
+        "ccbridge.transports.stop_hook.run_audit_with_config", fake
+    )
+    return state
+
+
+def test_skip_marker_without_signature_field_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Marker missing the `signature` field — likely forged. Reject:
+    audit DOES run, marker file is deleted (poisoned, don't leave reusable).
+    """
+    _seed_user_home_with_secret(monkeypatch, tmp_path)
+    repo = _make_repo(tmp_path)
+    # Use the unsigned helper from earlier in this file — it doesn't
+    # populate `signature`.
+    marker_path = _write_skip_marker(repo, session_id="sess-X")
+    captured = _stub_outcome_capturing(monkeypatch, _make_outcome("pass"))
+
+    result = _run_hook(
+        monkeypatch,
+        capsys,
+        stdin={
+            "stop_hook_active": False,
+            "cwd": str(repo),
+            "session_id": "sess-X",
+        },
+        project_dir=repo,
+    )
+    assert result.exit_code == 0
+    assert captured["flag"] is True, "audit must run when signature missing"
+    assert not marker_path.exists()  # cleaned up so attacker can't retry
+
+
+def test_skip_marker_with_tampered_signature_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Marker with a wrong HMAC value is rejected; audit runs."""
+    _seed_user_home_with_secret(monkeypatch, tmp_path)
+    repo = _make_repo(tmp_path)
+    marker_path = _write_signed_marker(repo, session_id="sess-X")
+    data = json.loads(marker_path.read_text(encoding="utf-8"))
+    data["signature"] = "0" * 64
+    marker_path.write_text(json.dumps(data), encoding="utf-8")
+    captured = _stub_outcome_capturing(monkeypatch, _make_outcome("pass"))
+
+    result = _run_hook(
+        monkeypatch,
+        capsys,
+        stdin={
+            "stop_hook_active": False,
+            "cwd": str(repo),
+            "session_id": "sess-X",
+        },
+        project_dir=repo,
+    )
+    assert result.exit_code == 0
+    assert captured["flag"] is True
+    assert not marker_path.exists()
+
+
+def test_skip_marker_with_modified_session_id_invalidates_signature(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Attacker copies a valid signature but changes session_id to match
+    a different turn → HMAC mismatch → reject.
+    """
+    _seed_user_home_with_secret(monkeypatch, tmp_path)
+    repo = _make_repo(tmp_path)
+    marker_path = _write_signed_marker(repo, session_id="sess-OLD")
+    data = json.loads(marker_path.read_text(encoding="utf-8"))
+    data["session_id"] = "sess-NEW"  # signature now stale
+    marker_path.write_text(json.dumps(data), encoding="utf-8")
+    captured = _stub_outcome_capturing(monkeypatch, _make_outcome("pass"))
+
+    result = _run_hook(
+        monkeypatch,
+        capsys,
+        stdin={
+            "stop_hook_active": False,
+            "cwd": str(repo),
+            "session_id": "sess-NEW",
+        },
+        project_dir=repo,
+    )
+    assert result.exit_code == 0
+    assert captured["flag"] is True
+    assert not marker_path.exists()
+
+
+def test_skip_marker_consume_failure_falls_through_to_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Audit High #5: if unlink() fails, the marker stays on disk and
+    is reusable. We must run audit normally instead of silently
+    trusting a marker we couldn't consume.
+    """
+    _seed_user_home_with_secret(monkeypatch, tmp_path)
+    repo = _make_repo(tmp_path)
+    marker_path = _write_signed_marker(repo, session_id="sess-X")
+
+    # Force unlink to fail.
+    real_unlink = Path.unlink
+
+    def _flaky_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self.name == "skip-review.json":
+            raise OSError("simulated unlink failure")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _flaky_unlink)
+
+    captured = _stub_outcome_capturing(monkeypatch, _make_outcome("pass"))
+
+    result = _run_hook(
+        monkeypatch,
+        capsys,
+        stdin={
+            "stop_hook_active": False,
+            "cwd": str(repo),
+            "session_id": "sess-X",
+        },
+        project_dir=repo,
+    )
+    assert result.exit_code == 0
+    # Marker was NOT consumed because unlink failed → audit MUST have run.
+    assert captured["flag"] is True, (
+        "audit must run when skip-marker consume failed"
+    )
+    # Marker file still on disk (consume failure is the test setup).
+    assert marker_path.exists()
+
+
+def test_skip_marker_with_no_user_secret_falls_through_to_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """If the user-home secret doesn't exist, no marker can possibly be
+    valid — Stop hook must run the audit normally and clean up the
+    marker (it's effectively orphaned).
+    """
+    home = tmp_path / "home-empty"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    repo = _make_repo(tmp_path)
+    # Write a marker with a fake signature (no real secret to sign with).
+    ccbridge = repo / ".ccbridge"
+    ccbridge.mkdir()
+    marker_path = ccbridge / "skip-review.json"
+    marker_path.write_text(
+        json.dumps(
+            {
+                "session_id": "sess-X",
+                "transcript_path": "/tmp/t.jsonl",
+                "cwd": str(repo),
+                "created_at": datetime.now(UTC).isoformat(),
+                "marker": "[skip-review]",
+                "reason": "user_marker",
+                "signature": "f" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured = _stub_outcome_capturing(monkeypatch, _make_outcome("pass"))
+
+    result = _run_hook(
+        monkeypatch,
+        capsys,
+        stdin={
+            "stop_hook_active": False,
+            "cwd": str(repo),
+            "session_id": "sess-X",
+        },
+        project_dir=repo,
+    )
+    assert result.exit_code == 0
+    assert captured["flag"] is True
+    assert not marker_path.exists()

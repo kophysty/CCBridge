@@ -25,6 +25,61 @@
 
 ---
 
+### [2026-05-03] Plan A confirmed — доводим архитектуру до конца, не упрощаем
+
+**Was:** Перед PR2c этап 1 повторным аудитом возник вопрос: почему
+"скрипт-передатчик результатов между двумя CLI" вырос в продукт с
+~25 модулями, 323 тестами, 3 аудитами и неделей работы. Ответ был
+дан подробно — мы построили не передатчик, а runtime для долгоживущего
+peer-review pipeline'а: recovery model (audit.jsonl primary +
+state.json кэш + lockfile), schema discipline (Pydantic verdict +
+validate_semantics), Wave-readiness (event-driven), multi-transport
+(CLI + Stop hook + UserPromptSubmit + audit_watch), hook lifecycle
+hygiene (backup + idempotency + legacy upgrade), security boundaries
+(stdout discipline + fail-open), cross-platform (Windows cp1251 +
+PATHEXT + UTF-8 BOM), методология (Rulebook + ROADMAP + ADR + handoffs).
+Каждый слой по отдельности оправдан реальным аудитом или smoke-test'ом.
+
+Я предложил три варианта:
+- **A:** доводим текущую архитектуру (~1.5–2ч на 4 blocker'а текущего
+  аудита, потом финальный аудит, потом v0.1.0).
+- **B:** урезать scope (выкинуть skip-review + UserPromptSubmit +
+  audit_watch), релизнуть minimal v0.1.0.
+- **C:** откат substep 5 и переписать в 80 строк без отдельного marker
+  файла.
+
+**Now:** Plan A подтверждён пользователем:
+> «Я абсолютно за вариант А. Всё делаем по плану. Лучше сделать
+> нормально и архитектурно делать масштабируемый продукт, а не сделать
+> поделку, которая будет ломаться.»
+
+**Why:**
+- Слои не "лишние" — они закрывают реальные failure modes (5 race
+  conditions в lockfile аудит P0-1, hallucinations в Codex P1-2,
+  poisoned backup в Major #1, и т.д.). Урезание scope = откладывание
+  тех же багов в production.
+- Wave/MCP-readiness был осознанным выбором с ARCHITECTURE.md v0.0.1.
+  Откат event-driven архитектуры = переписать через 1-2 версии.
+- Skip-review закрывает реальный UX pain (мелкая правка → не запускать
+  Codex). Удаление = потеря фичи + время уже потрачено.
+
+**Impact:**
+- Закрываем 4 blocker'а PR2c аудита (custom marker, marker file
+  trust boundary, backup poisoning через --force, top-level entry
+  deletion). +3 high/medium/minor.
+- На Finding #2 (marker file в writable workspace) — нужна структурная
+  правка: signed token / per-process channel / OS-level secret. Это
+  +час проектирования сверху, потому что простой fix не закрывает
+  заявленную security boundary.
+- Документируем продакт-описание в `Projects/00-strategy/
+  product-capabilities.md` — что умеем сейчас, куда движемся,
+  чтобы будущие сессии видели полную картину без чтения 25 модулей.
+- В будущих PR строже соблюдать "don't add features beyond what
+  the task requires" (CLAUDE.md). Я расширял scope skip-review за
+  пределы запрошенного — это и привело к 6 из 8 findings про неё же.
+
+---
+
 ### [2026-05-03] PR2b аудит — разделение фиксов на 2 этапа + skip-review
 
 **Was:** PR2b code-complete (273 tests passed, ruff/mypy clean) ушёл

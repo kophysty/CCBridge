@@ -324,3 +324,126 @@ def test_uninstall_json_output(tmp_path: Path) -> None:
     assert data.get("project_dir") == str(project.resolve())
     assert data.get("settings_modified") is True
     assert data.get("ccbridge_dir_removed") is True
+
+
+# ---------------------------------------------------------------------------
+# UserPromptSubmit hook removal (substep 5e)
+# ---------------------------------------------------------------------------
+
+
+def test_uninstall_removes_user_prompt_submit_entry(tmp_path: Path) -> None:
+    """init wires up both Stop and UserPromptSubmit; uninstall must
+    remove BOTH our entries, not just Stop.
+    """
+    project = _initialized_project(tmp_path)
+
+    runner = CliRunner()
+    runner.invoke(cli, ["uninstall", str(project), "--yes"])
+
+    settings_path = project / ".claude" / "settings.json"
+    if settings_path.exists():
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        # No prompt-hook entries should remain.
+        cmds: list[str] = []
+        for entry in data.get("hooks", {}).get("UserPromptSubmit", []):
+            for hook in entry.get("hooks", []):
+                cmds.append(hook.get("command", ""))
+        assert not any("prompt-hook" in c for c in cmds)
+
+
+def test_uninstall_preserves_user_hook_in_same_entry_as_ccbridge(
+    tmp_path: Path,
+) -> None:
+    """Audit Blocker #4: when a single settings.json entry contains
+    BOTH a user hook AND a ccbridge hook (in entry["hooks"]), uninstall
+    must remove only the ccbridge command from the nested list while
+    keeping the user's hook AND the parent entry intact.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    claude_dir = project / ".claude"
+    claude_dir.mkdir()
+    settings_path = claude_dir / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "matcher": "*",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "their-other-tool --foo",
+                                },
+                                {
+                                    "type": "command",
+                                    "command": "ccbridge stop-hook",
+                                },
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    runner.invoke(cli, ["uninstall", str(project), "--keep-data"])
+
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    cmds: list[str] = []
+    for entry in data.get("hooks", {}).get("Stop", []):
+        for hook in entry.get("hooks", []):
+            cmds.append(hook.get("command", ""))
+    assert any("their-other-tool" in c for c in cmds), (
+        f"user hook lost during uninstall: {cmds}"
+    )
+    assert not any("ccbridge" in c.lower() for c in cmds)
+
+
+def test_uninstall_preserves_user_prompt_submit_entries_from_other_tools(
+    tmp_path: Path,
+) -> None:
+    """If the user has UserPromptSubmit hooks from another tool, our
+    uninstall must keep them intact while removing only ccbridge.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    claude_dir = project / ".claude"
+    claude_dir.mkdir()
+    settings_path = claude_dir / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "UserPromptSubmit": [
+                        {
+                            "matcher": "*",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "their-other-tool --foo",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    runner.invoke(cli, ["init", str(project)])
+    runner.invoke(cli, ["uninstall", str(project), "--keep-data"])
+
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    cmds: list[str] = []
+    for entry in data.get("hooks", {}).get("UserPromptSubmit", []):
+        for hook in entry.get("hooks", []):
+            cmds.append(hook.get("command", ""))
+    # Their tool stays; our entry is gone.
+    assert any("their-other-tool" in c for c in cmds)
+    assert not any("prompt-hook" in c for c in cmds)

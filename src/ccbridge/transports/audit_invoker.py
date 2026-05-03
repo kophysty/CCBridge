@@ -76,6 +76,7 @@ def run_audit_with_config(
         rules_paths=rules_paths,
         max_iterations=config.review.max_iterations,
         max_diff_lines=config.review.max_diff_lines,
+        min_diff_lines=config.review.skip_trivial_diff_max_lines,
     )
 
 

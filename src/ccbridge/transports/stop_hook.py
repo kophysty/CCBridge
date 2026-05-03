@@ -10,9 +10,12 @@ Stop hook semantics (per https://code.claude.com/docs/en/hooks):
   — it must keep working. Use this for ``verdict=fail``.
 * ``{"continue": false, "stopReason": "..."}`` lets Claude stop AND
   surfaces a user-visible reason. Use this for ``needs_human``,
-  ``error``, ``skipped``, lock-busy: cases where there is no point
-  re-prompting Claude (the issue is human/operational).
-* Empty stdout + exit 0 → no opinion, business as usual.
+  ``error``, lock-busy: cases where there is no point re-prompting
+  Claude (the issue is human/operational).
+* Empty stdout + exit 0 → no opinion, business as usual. We use this
+  for ``verdict=pass`` AND for ``verdict=skipped`` (trivial diff /
+  empty diff / user [skip-review] marker — those are non-events,
+  not operational problems, so no user-visible message is needed).
 
 Hard contract for stdout (audit finding follow-up):
 
@@ -29,6 +32,15 @@ Hard contract for stdout (audit finding follow-up):
 Recursion guard: ``stop_hook_active=true`` in input means we are
 already inside a hook-triggered Claude turn. We must not start another
 audit, otherwise the cycle never terminates.
+
+Skip-review short-circuit: if the user's last UserPromptSubmit
+contained the configured skip marker (default ``[skip-review]``),
+``transports/prompt_hook`` records a signed marker file under
+``.ccbridge/skip-review.json``. We validate its HMAC against the
+user-home secret (``~/.ccbridge/skip-review.secret``) and, on success,
+consume it and return empty stdout — no audit runs. Forged markers
+(missing/invalid signature, wrong session_id, future timestamp,
+expired) are rejected and the audit proceeds normally.
 """
 
 from __future__ import annotations
@@ -38,6 +50,7 @@ import logging
 import os
 import sys
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +65,9 @@ logger = logging.getLogger(__name__)
 
 MAX_REASON_CHARS = 4000
 CCBRIDGE_DIR_NAME = ".ccbridge"
+SKIP_MARKER_FILENAME = "skip-review.json"
+SKIP_MARKER_TTL = timedelta(minutes=30)
+SKIP_MARKER_CLOCK_SKEW = timedelta(seconds=5)  # tolerate small clock drift
 
 
 def stop_hook_main() -> int:
@@ -76,6 +92,13 @@ def stop_hook_main() -> int:
 
     project_dir = _resolve_project_dir(payload)
     if project_dir is None:
+        return 0
+
+    # Skip-review short-circuit: if the user wrote [skip-review] in their
+    # last UserPromptSubmit and our prompt_hook recorded a marker for THIS
+    # session, consume it and skip the audit entirely. Empty stdout =
+    # "no opinion", Claude proceeds with the normal stop.
+    if _check_skip_marker(project_dir, payload):
         return 0
 
     try:
@@ -167,6 +190,201 @@ def _resolve_project_dir(payload: dict[str, Any]) -> Path | None:
 
 
 # ---------------------------------------------------------------------------
+# Skip-review marker (written by prompt_hook on UserPromptSubmit)
+# ---------------------------------------------------------------------------
+
+
+def _check_skip_marker(project_dir: Path, payload: dict[str, Any]) -> bool:
+    """Return True if a valid skip-review marker matches this Stop turn.
+
+    Match criteria (all must hold):
+
+    * ``.ccbridge/skip-review.json`` exists and is valid JSON.
+    * ``data["session_id"]`` equals ``payload["session_id"]`` (string).
+    * ``data["created_at"]`` is a parseable ISO8601 timestamp.
+    * Age of marker is ≤ 30 minutes (TTL guard).
+    * HMAC ``signature`` validates against the user-home secret. This
+      is the structural guard that prevents a workspace-write attacker
+      from forging a marker (Blocker #2): forging requires the secret
+      stored in ``~/.ccbridge/skip-review.secret``, not the writable
+      project workspace.
+
+    On match: best-effort delete the marker (consume), return True.
+    On expired / forged / unreadable / mismatched session: best-effort
+    delete the marker (so it can't be reused) and return False so the
+    normal audit path runs. Exception: mismatched session_id leaves
+    the marker alone — it may legitimately belong to another turn.
+    """
+    skip_path = project_dir / CCBRIDGE_DIR_NAME / SKIP_MARKER_FILENAME
+    if not skip_path.exists():
+        return False
+
+    input_session = payload.get("session_id")
+    if not isinstance(input_session, str) or not input_session:
+        # No session_id in Stop input → can't match. Don't touch the
+        # marker; another Stop turn for the right session may pick it up.
+        return False
+
+    try:
+        text = skip_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        _emit_diagnostic(f"stop_hook: skip-marker unreadable: {exc}")
+        return False
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        _emit_diagnostic(f"stop_hook: skip-marker malformed: {exc}")
+        _try_unlink(skip_path)
+        return False
+
+    if not isinstance(data, dict):
+        _emit_diagnostic("stop_hook: skip-marker JSON is not an object")
+        _try_unlink(skip_path)
+        return False
+
+    marker_session = data.get("session_id")
+    if not isinstance(marker_session, str) or marker_session != input_session:
+        # Different session — leave marker for whoever it belongs to.
+        return False
+
+    created_raw = data.get("created_at", "")
+    try:
+        created = datetime.fromisoformat(created_raw)
+    except (TypeError, ValueError):
+        _emit_diagnostic("stop_hook: skip-marker has invalid created_at")
+        _try_unlink(skip_path)
+        return False
+
+    if created.tzinfo is None:
+        # Treat naive timestamp as UTC for backwards-tolerance.
+        created = created.replace(tzinfo=UTC)
+
+    now = datetime.now(UTC)
+    age = now - created
+    if age > SKIP_MARKER_TTL:
+        # Expired — clean up but do NOT skip the audit.
+        _try_unlink(skip_path)
+        return False
+    # Future-dated marker: created_at is later than now beyond a small
+    # clock-skew tolerance. Either malicious crafting or severe drift —
+    # neither safe to honour (audit Medium #6).
+    if age < -SKIP_MARKER_CLOCK_SKEW:
+        _emit_diagnostic(
+            f"stop_hook: skip-marker timestamp is in the future "
+            f"({-age.total_seconds():.0f}s ahead); rejecting"
+        )
+        _try_unlink(skip_path)
+        return False
+
+    # Signature validation — defense-in-depth against marker forgery
+    # by a workspace-writable attacker. See module docstring + Blocker #2
+    # in Discovery/logs/decisions.md (2026-05-03 entry).
+    if not _verify_marker_signature(data):
+        _emit_diagnostic(
+            "stop_hook: skip-marker signature invalid; rejecting (will "
+            "run audit normally)"
+        )
+        _try_unlink(skip_path)
+        return False
+
+    # Match. Consume MUST succeed before we trust the skip — otherwise
+    # the marker stays on disk and is reusable on the next Stop turn,
+    # potentially bypassing audit indefinitely (audit High #5).
+    if not _consume_marker(skip_path):
+        return False
+    return True
+
+
+def _try_unlink(path: Path) -> None:
+    """Best-effort delete used during marker rejection (when audit will
+    still run regardless of whether the file goes away).
+
+    We never let a delete failure crash the hook. Worst case the marker
+    stays on disk and TTL eventually invalidates it.
+    """
+    try:
+        path.unlink()
+    except OSError as exc:
+        _emit_diagnostic(f"stop_hook: could not delete skip-marker: {exc}")
+
+
+def _consume_marker(path: Path) -> bool:
+    """Delete the marker; return True iff delete actually succeeded.
+
+    This is the consume operation in the strict sense — only after the
+    marker is gone can we safely tell the caller "skip the audit". If
+    delete fails, the marker is reusable and we MUST run the audit
+    normally (audit High #5 fix).
+    """
+    try:
+        path.unlink()
+    except OSError as exc:
+        _emit_diagnostic(
+            f"stop_hook: could not consume skip-marker, will run audit: "
+            f"{exc}"
+        )
+        return False
+    return True
+
+
+def _verify_marker_signature(data: dict[str, Any]) -> bool:
+    """True iff the marker's `signature` field matches the HMAC we
+    re-derive from the user-home secret + binding fields.
+
+    Returns False on:
+    * missing or non-string signature
+    * missing user-home secret (no possible valid signature)
+    * any HMAC mismatch (constant-time compare)
+    * any internal error reading the secret (fail-closed: a marker
+      we can't validate is not trusted)
+    """
+    signature = data.get("signature")
+    if not isinstance(signature, str) or len(signature) != 64:
+        return False
+
+    try:
+        from ccbridge.transports.prompt_hook import (
+            _compute_signature,
+            _user_secret_path,
+        )
+
+        secret_path = _user_secret_path()
+        if not secret_path.exists():
+            return False
+        try:
+            secret_hex = secret_path.read_text(encoding="utf-8").strip()
+            secret = bytes.fromhex(secret_hex)
+        except (OSError, ValueError):
+            return False
+
+        session_id = data.get("session_id", "")
+        created_at = data.get("created_at", "")
+        transcript_path = data.get("transcript_path", "")
+        marker = data.get("marker", "")
+        if not all(
+            isinstance(v, str)
+            for v in (session_id, created_at, transcript_path, marker)
+        ):
+            return False
+
+        expected = _compute_signature(
+            secret,
+            session_id=session_id,
+            created_at=created_at,
+            transcript_path=transcript_path,
+            marker=marker,
+        )
+        # constant-time compare
+        import hmac as _hmac
+
+        return _hmac.compare_digest(expected, signature)
+    except Exception as exc:  # pragma: no cover — defensive
+        _emit_diagnostic(f"stop_hook: signature verify failed: {exc}")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator invocation
 # ---------------------------------------------------------------------------
 
@@ -241,14 +459,11 @@ def _decision_for_outcome(
         }
 
     if verdict == "skipped":
-        return {
-            "continue": False,
-            "stopReason": _bound(
-                f"CCBridge skipped review (run {outcome.run_uuid}): "
-                f"empty or binary-only diff. No code changes were "
-                f"detected to audit."
-            ),
-        }
+        # Skipped is a non-event for Claude (no real diff to review or
+        # below trivial-diff threshold). Empty stdout = "no opinion" —
+        # Claude proceeds with the normal stop. ``continue:false`` is
+        # reserved for operational problems the user must address.
+        return None
 
     # Unknown verdict — defensive: treat as needs_human.
     return {

@@ -1,8 +1,16 @@
 """CCBridge command-line interface.
 
-PR2b step 6a: read/run-only commands. ``init`` / ``uninstall`` are
-declared but stub out with a clear "deferred to 6b" error so users
-don't get a confusing "no such command" if they try too early.
+Subcommands:
+
+* ``audit run`` / ``audit list`` / ``audit get`` / ``audit watch`` —
+  run a peer-review cycle and inspect history.
+* ``status`` — show project state (last run, lockfile holder).
+* ``init`` / ``uninstall`` — install or remove the Claude Code hook
+  wiring (``.claude/settings.json`` Stop + UserPromptSubmit entries,
+  ``.ccbridge/`` directory).
+* ``stop-hook`` / ``prompt-hook`` — internal entry points invoked by
+  Claude Code via ``.claude/settings.json``. Not for direct user use,
+  but documented for transparency and debugging.
 
 Output contract:
 
@@ -65,6 +73,7 @@ from ccbridge.transports.audit_invoker import (  # noqa: E402
     run_audit_with_config as _run_audit_with_config_impl,
 )
 from ccbridge.transports.audit_watch import watch_audit_log  # noqa: E402
+from ccbridge.transports.prompt_hook import prompt_hook_main  # noqa: E402
 from ccbridge.transports.stop_hook import stop_hook_main  # noqa: E402
 
 CCBRIDGE_DIR_NAME = ".ccbridge"
@@ -541,8 +550,8 @@ def stop_hook() -> None:
     This is the command Claude Code invokes via .claude/settings.json
     after each turn. It reads JSON from stdin, decides whether to
     block stopping (verdict=fail) or let Claude stop with a reason
-    (needs_human/error/skipped/lock_busy), and writes decision JSON
-    to stdout. Empty stdout means "no opinion".
+    (needs_human/error/lock_busy), and writes decision JSON to stdout.
+    Empty stdout means "no opinion" (also used for verdict=skipped).
 
     Fail-open contract: any internal error → empty stdout, diagnostic
     on stderr, exit 0. Never wedge a Claude session.
@@ -551,6 +560,26 @@ def stop_hook() -> None:
     https://code.claude.com/docs/en/hooks for upstream semantics.
     """
     sys.exit(stop_hook_main())
+
+
+@cli.command("prompt-hook")
+def prompt_hook() -> None:
+    """Process Claude Code UserPromptSubmit hook event.
+
+    Reads the submitted prompt JSON from stdin. If the user typed
+    ``[skip-review]`` (case-insensitive), records a marker file in
+    ``.ccbridge/skip-review.json`` so the upcoming Stop hook for the
+    same session_id can short-circuit and skip the audit.
+
+    Stdout always stays empty — UserPromptSubmit hooks have no
+    decision contract. Diagnostics go to stderr.
+
+    Fail-open: any internal error → empty stdout, no marker, exit 0.
+
+    See ``transports/prompt_hook.py`` for the full contract and
+    https://code.claude.com/docs/en/hooks for upstream semantics.
+    """
+    sys.exit(prompt_hook_main())
 
 
 # ---------------------------------------------------------------------------
@@ -633,17 +662,32 @@ def _stop_hook_command_marker() -> str:
 
 
 def _quote_for_shell(path: str) -> str:
-    """Wrap path in double quotes if it contains spaces.
+    """Quote a path for inclusion in a shell command line.
 
-    Claude Code parses hook ``command`` as a shell command. On Windows,
-    Python venvs can sit under "Program Files" / "AppData/Local" with
-    spaces — bare path would split into multiple argv tokens. Always
-    quote when needed; never harm to over-quote a path without spaces
-    but we keep it minimal for readability.
+    Claude Code parses hook ``command`` as a shell command. The right
+    rules differ per platform:
+
+    * Windows: ``subprocess.list2cmdline`` produces output that
+      ``CommandLineToArgvW`` will parse back to the original argv —
+      the same convention CPython uses for its own subprocess calls.
+      Handles spaces, embedded double quotes, and backslashes.
+    * POSIX: ``shlex.quote`` wraps in single quotes (with embedded
+      single-quote handling), which neutralizes EVERY shell
+      metacharacter — spaces, semicolons, backticks, ``$``, newlines,
+      pipes, etc.
+
+    Audit Minor #7 (2026-05-03): the previous implementation only
+    wrapped on a literal space, which left dangerous metacharacters
+    unescaped on POSIX (``$``, backticks, ``;``). The new behaviour
+    is platform-correct AND defensive against unexpected paths.
     """
-    if " " in path:
-        return f'"{path}"'
-    return path
+    if sys.platform == "win32":
+        import subprocess
+
+        return subprocess.list2cmdline([path])
+    import shlex
+
+    return shlex.quote(path)
 
 
 def _hook_command(subcommand: str) -> str:
@@ -659,16 +703,116 @@ def _hook_command(subcommand: str) -> str:
     return f"{_quote_for_shell(sys.executable)} -m ccbridge.cli {subcommand}"
 
 
-def _build_stop_hook_entry() -> dict[str, Any]:
+def _build_hook_entry(subcommand: str) -> dict[str, Any]:
+    """Build a settings.json hook entry for our ``ccbridge.cli SUBCOMMAND``.
+
+    Used for both Stop (subcommand="stop-hook") and UserPromptSubmit
+    (subcommand="prompt-hook") so init/uninstall share one shape.
+    """
     return {
         "matcher": "*",
         "hooks": [
             {
                 "type": "command",
-                "command": _hook_command("stop-hook"),
+                "command": _hook_command(subcommand),
             }
         ],
     }
+
+
+# CCBridge-managed hook events: (settings_event_name, cli_subcommand).
+# init writes one entry per row; uninstall removes one entry per row.
+CCBRIDGE_HOOK_EVENTS: tuple[tuple[str, str], ...] = (
+    ("Stop", "stop-hook"),
+    ("UserPromptSubmit", "prompt-hook"),
+)
+
+
+def _all_ccbridge_markers() -> tuple[str, ...]:
+    """All marker substrings for any CCBridge-managed event.
+
+    Used for "is this command ours?" checks regardless of which event
+    it lives under. Order is not significant.
+    """
+    out: list[str] = []
+    for _event_name, subcommand in CCBRIDGE_HOOK_EVENTS:
+        out.extend(_ccbridge_command_markers(subcommand))
+    return tuple(out)
+
+
+def _strip_ccbridge_from_hooks_dict(hooks: dict[str, Any]) -> None:
+    """Remove every CCBridge entry from a settings.json ``hooks`` dict.
+
+    Drills into each event's array AND each entry's nested ``hooks``
+    list (the actual command list). Empty entries (after we drop our
+    nested commands) and empty event arrays are pruned. The dict is
+    mutated in place.
+
+    This is the SHARED engine used by:
+      - backup sanitization (Blocker #3) — strip our markers before
+        writing the .ccbridge.bak.
+      - uninstall (Blocker #4) — strip only our nested hooks, keep
+        the user's other hooks in the same parent entry.
+    """
+    all_markers = _all_ccbridge_markers()
+    for event_name in list(hooks.keys()):
+        event_entries = hooks.get(event_name)
+        if not isinstance(event_entries, list):
+            continue
+        survivors: list[Any] = []
+        for entry in event_entries:
+            if not isinstance(entry, dict):
+                survivors.append(entry)
+                continue
+            nested = entry.get("hooks")
+            if not isinstance(nested, list):
+                survivors.append(entry)
+                continue
+            # Filter nested commands — keep non-ccbridge ones.
+            kept = [
+                h
+                for h in nested
+                if not (
+                    isinstance(h, dict)
+                    and any(
+                        marker in (h.get("command") or "")
+                        for marker in all_markers
+                    )
+                )
+            ]
+            if not kept:
+                # Entry contained ONLY ccbridge hooks — drop the whole
+                # parent entry.
+                continue
+            entry["hooks"] = kept
+            survivors.append(entry)
+        if not survivors:
+            del hooks[event_name]
+        else:
+            hooks[event_name] = survivors
+
+
+def _sanitize_for_backup(source: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a deep-copied, CCBridge-free version of ``source``, or
+    None if the result would be effectively empty (then no backup
+    should be written).
+
+    "Effectively empty" means the only key was ``hooks`` and we
+    stripped everything from it. We don't preserve a backup that
+    represents nothing — better that uninstall delete the file
+    cleanly (since we created it via init originally).
+    """
+    import copy
+
+    copy_data = copy.deepcopy(source)
+    hooks = copy_data.get("hooks")
+    if isinstance(hooks, dict):
+        _strip_ccbridge_from_hooks_dict(hooks)
+        if not hooks:
+            del copy_data["hooks"]
+    if not copy_data:
+        return None
+    return copy_data
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -702,7 +846,7 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def _patch_settings_json(
     settings_path: Path, *, force: bool
 ) -> tuple[bool, bool]:
-    """Add a CCBridge Stop hook entry to settings.json.
+    """Add CCBridge hook entries to settings.json (Stop + UserPromptSubmit).
 
     Returns (patched, backed_up):
       - patched: True if file was written (new or modified)
@@ -713,11 +857,15 @@ def _patch_settings_json(
 
     Backup discipline (audit finding #1, 2026-05-03): backup is created
     ONLY when we are about to actually write. If the file already exists
-    AND already contains our entry AND not force — return early WITHOUT
-    creating a backup. Otherwise we'd overwrite a legitimate pre-CCBridge
-    backup with the post-init state on every repeat init, which then
-    poisons uninstall (it would restore that bogus backup and leave our
-    hook installed). Backup must always reflect pre-CCBridge state.
+    AND already contains all our entries AND not force — return early
+    WITHOUT creating a backup. Otherwise we'd overwrite a legitimate
+    pre-CCBridge backup with the post-init state on every repeat init,
+    which then poisons uninstall (it would restore that bogus backup
+    and leave our hook installed).
+
+    All ccbridge events (Stop, UserPromptSubmit, ...) are patched in
+    a single read-modify-write cycle so the file is touched once and
+    backup-discipline applies to the whole set.
     """
     existing: dict[str, Any] = {}
     file_existed = settings_path.exists()
@@ -740,50 +888,93 @@ def _patch_settings_json(
         raise OSError(
             f"{settings_path} has hooks key but it's not an object"
         )
-    stop = hooks.setdefault("Stop", [])
-    if not isinstance(stop, list):
-        raise OSError(
-            f"{settings_path} hooks.Stop is not an array"
+
+    # Per-event analysis: which events are wired, and which use the
+    # current new-form command shape (vs legacy bare ``ccbridge ...``).
+    # If everything is already on the new form and not --force, we
+    # short-circuit without touching the file (or its backup).
+    new_form_marker_for: dict[str, str] = {}
+    legacy_marker_for: dict[str, str] = {}
+    bucket_for: dict[str, list[Any]] = {}
+    needs_change: dict[str, bool] = {}
+
+    for event_name, subcommand in CCBRIDGE_HOOK_EVENTS:
+        bucket = hooks.setdefault(event_name, [])
+        if not isinstance(bucket, list):
+            raise OSError(
+                f"{settings_path} hooks.{event_name} is not an array"
+            )
+        bucket_for[event_name] = bucket
+        new_form, legacy = _ccbridge_command_markers(subcommand)
+        new_form_marker_for[event_name] = new_form
+        legacy_marker_for[event_name] = legacy
+
+        on_new_form = any(
+            _entry_matches_markers(entry, (new_form,))
+            for entry in bucket
+            if isinstance(entry, dict)
         )
+        on_legacy_form = any(
+            _entry_matches_markers(entry, (legacy,))
+            for entry in bucket
+            if isinstance(entry, dict)
+        )
+        # Need to write iff:
+        #   --force (always rewrite), OR
+        #   not currently on the new form (missing OR legacy upgrade).
+        needs_change[event_name] = force or not on_new_form or on_legacy_form
 
-    markers = _ccbridge_command_markers("stop-hook")
-    already_present = any(
-        _entry_matches_markers(entry, markers)
-        for entry in stop
-        if isinstance(entry, dict)
-    )
-
-    if already_present and not force:
-        # Nothing to do, nothing to back up.
+    if not any(needs_change.values()):
+        # Everything already on the current form. No write, no backup.
         return False, False
 
     # We ARE going to modify. Take backup now if the file pre-existed
     # AND we don't already have a backup (existing backup is more
     # authoritatively "pre-CCBridge" than what we're about to overwrite).
+    #
+    # IMPORTANT (audit Blocker #3, 2026-05-03): backup must always
+    # represent a CCBridge-FREE state. We sanitize before writing —
+    # strip any CCBridge entries (new or legacy form) from a copy of
+    # the source. Without this, repeat init / init --force creates a
+    # backup whose content is *post-CCBridge*; then uninstall restores
+    # that "backup" and leaves CCBridge entries behind.
+    #
+    # If the source contained ONLY CCBridge entries (sanitized copy is
+    # effectively empty), we don't create a backup at all — there's no
+    # pre-CCBridge state worth preserving.
     backed_up = False
     if file_existed:
         backup = settings_path.with_suffix(
             settings_path.suffix + ".ccbridge.bak"
         )
         if not backup.exists():
-            backup.write_text(
-                settings_path.read_text(encoding="utf-8"), encoding="utf-8"
-            )
-            backed_up = True
+            sanitized = _sanitize_for_backup(existing)
+            if sanitized is not None:
+                backup.write_text(
+                    json.dumps(sanitized, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                backed_up = True
 
-    if force or already_present:
-        # Strip any prior ccbridge entries — both new-form and legacy.
-        # ``already_present`` here means we ARE force=True (because
-        # without force we returned earlier), so this drops the old
-        # entries before the clean append below.
-        stop[:] = [
+    for event_name, subcommand in CCBRIDGE_HOOK_EVENTS:
+        if not needs_change[event_name]:
+            continue
+        bucket = bucket_for[event_name]
+        markers = (
+            new_form_marker_for[event_name],
+            legacy_marker_for[event_name],
+        )
+        # Strip prior ccbridge entries (new + legacy) before appending
+        # the canonical one. This handles: --force rebuild, legacy
+        # upgrade, and accidental duplicates.
+        bucket[:] = [
             entry
-            for entry in stop
+            for entry in bucket
             if not isinstance(entry, dict)
             or not _entry_matches_markers(entry, markers)
         ]
+        bucket.append(_build_hook_entry(subcommand))
 
-    stop.append(_build_stop_hook_entry())
     _atomic_write_json(settings_path, existing)
     return True, backed_up
 
@@ -903,29 +1094,18 @@ def init(path: str, force: bool, as_json: bool) -> None:
         )
 
 
-def _is_ccbridge_entry(entry: Any) -> bool:
-    """Predicate: True if this Stop-array entry is OUR ccbridge entry.
-
-    Recognises both the new absolute-path form and legacy bare form.
-    See :func:`_ccbridge_command_markers` for the marker set.
-    """
-    if not isinstance(entry, dict):
-        return False
-    return _entry_matches_markers(
-        entry, _ccbridge_command_markers("stop-hook")
-    )
-
-
 def _unpatch_settings_json(settings_path: Path) -> bool:
-    """Remove our Stop hook entry from settings.json.
+    """Remove all CCBridge hook entries from settings.json.
 
     Returns True if the file was modified. Side effects:
-    - Removes our entry from hooks.Stop
-    - Drops empty hooks.Stop array
-    - Drops empty hooks dict
+    - Strips our nested hooks from each event's entries
+      (preserves co-located user hooks — Blocker #4 fix).
+    - Drops entries that become hook-less.
+    - Drops empty event arrays and the empty hooks dict.
     - If file becomes effectively empty AND a .ccbridge.bak exists,
-      restores from backup; otherwise deletes settings.json (we
-      created it, leave the workspace as we found it).
+      restores from backup (which is guaranteed CCBridge-free, see
+      :func:`_sanitize_for_backup`); otherwise deletes settings.json
+      (we created it via init).
     """
     if not settings_path.exists():
         return False
@@ -941,18 +1121,17 @@ def _unpatch_settings_json(settings_path: Path) -> bool:
     hooks = existing.get("hooks")
     if not isinstance(hooks, dict):
         return False
-    stop = hooks.get("Stop")
-    if not isinstance(stop, list):
+
+    # Snapshot before-state to detect modification (set comparison is
+    # order-insensitive and survives in-place mutation by the strip
+    # helper).
+    import copy
+
+    before_snapshot = copy.deepcopy(hooks)
+    _strip_ccbridge_from_hooks_dict(hooks)
+    if hooks == before_snapshot:
         return False
 
-    before = len(stop)
-    stop[:] = [entry for entry in stop if not _is_ccbridge_entry(entry)]
-    after = len(stop)
-    if before == after:
-        return False  # nothing to remove
-
-    if not stop:
-        del hooks["Stop"]
     if not hooks:
         del existing["hooks"]
 
@@ -963,7 +1142,10 @@ def _unpatch_settings_json(settings_path: Path) -> bool:
     if not existing:
         # File would be empty after our cleanup. Two cases:
         if backup.exists():
-            # User had pre-existing settings.json — restore the original.
+            # User had pre-existing settings.json — restore the original
+            # (which we sanitized at backup time, so it cannot leak our
+            # entries even if the backup was created from a tampered
+            # source — Blocker #3 fix).
             settings_path.write_text(
                 backup.read_text(encoding="utf-8"), encoding="utf-8"
             )

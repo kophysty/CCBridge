@@ -49,6 +49,8 @@ DEFAULT_VERDICT_CONFIDENCE_THRESHOLD = 0.7
 DEFAULT_CODEX_MODEL = "gpt-4o"
 DEFAULT_CODEX_API_KEY_ENV = "OPENAI_API_KEY"
 DEFAULT_CLAUDE_API_KEY_ENV = "ANTHROPIC_API_KEY"
+DEFAULT_SKIP_MARKER = "[skip-review]"
+DEFAULT_SKIP_TRIVIAL_DIFF_MAX_LINES = 0  # 0 = off; >0 = skip if diff ≤ N lines
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +73,8 @@ class ReviewSection:
     include_rules: tuple[str, ...] = ()
     include_recent_audits: int = DEFAULT_INCLUDE_RECENT_AUDITS
     verdict_confidence_threshold: float = DEFAULT_VERDICT_CONFIDENCE_THRESHOLD
+    skip_marker: str = DEFAULT_SKIP_MARKER
+    skip_trivial_diff_max_lines: int = DEFAULT_SKIP_TRIVIAL_DIFF_MAX_LINES
 
 
 @dataclass(frozen=True)
@@ -196,6 +200,12 @@ def _build_review(d: dict[str, Any]) -> ReviewSection:
         include_recent_audits=int(d.get("include_recent_audits", DEFAULT_INCLUDE_RECENT_AUDITS)),
         verdict_confidence_threshold=float(
             d.get("verdict_confidence_threshold", DEFAULT_VERDICT_CONFIDENCE_THRESHOLD)
+        ),
+        skip_marker=str(d.get("skip_marker", DEFAULT_SKIP_MARKER)),
+        skip_trivial_diff_max_lines=int(
+            d.get(
+                "skip_trivial_diff_max_lines", DEFAULT_SKIP_TRIVIAL_DIFF_MAX_LINES
+            )
         ),
     )
 

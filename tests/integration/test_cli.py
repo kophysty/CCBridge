@@ -524,6 +524,41 @@ def test_stop_hook_subcommand_propagates_nonzero_exit(
     assert result.exit_code == 2
 
 
+def test_prompt_hook_subcommand_invokes_hook_main(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ccbridge prompt-hook`` is the wrapper Claude Code invokes via
+    .claude/settings.json on UserPromptSubmit. It delegates to
+    prompt_hook_main and propagates its exit code.
+    """
+    called = {"flag": False}
+
+    def fake_prompt_main() -> int:
+        called["flag"] = True
+        return 0
+
+    monkeypatch.setattr("ccbridge.cli.prompt_hook_main", fake_prompt_main)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["prompt-hook"])
+
+    assert called["flag"] is True
+    assert result.exit_code == 0
+
+
+def test_prompt_hook_subcommand_propagates_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_prompt_main() -> int:
+        return 7
+
+    monkeypatch.setattr("ccbridge.cli.prompt_hook_main", fake_prompt_main)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["prompt-hook"])
+    assert result.exit_code == 7
+
+
 # NB: previously had stub-deferred-to-6b tests for init/uninstall;
 # those commands are now implemented (see test_cli_init.py +
 # test_cli_uninstall.py).

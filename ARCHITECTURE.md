@@ -569,7 +569,9 @@ class EventBus:
 renderers/
 ├── __init__.py
 ├── base.py              # Renderer protocol
-├── rich_renderer.py     # для Stop hook stdout — красивый rich UI
+├── rich_renderer.py     # CLI stdout / Stop hook stderr — rich UI;
+│                        # Stop hook биндит на stderr т.к. stdout
+│                        # зарезервирован под decision JSON
 ├── silent_renderer.py   # для тестов
 └── (future)
     ├── wave_renderer.py  # wsh badge, tab notifications в Wave

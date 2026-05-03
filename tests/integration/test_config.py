@@ -135,6 +135,45 @@ def test_include_rules_parsed_as_tuple(tmp_path: Path, monkeypatch: pytest.Monke
     assert config.review.include_rules == ("Rulebook/R-*.md", "CLAUDE.md")
 
 
+# ---------------------------------------------------------------------------
+# Skip-review fields (substep 5d)
+# ---------------------------------------------------------------------------
+
+
+def test_skip_marker_default_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cfg, "global_config_path", lambda: tmp_path / "no" / "config.toml")
+    config = cfg.load_config(project_dir=tmp_path)
+    assert config.review.skip_marker == "[skip-review]"
+
+
+def test_skip_trivial_diff_max_lines_default_is_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default is 0 = off — pre-existing behaviour preserved."""
+    monkeypatch.setattr(cfg, "global_config_path", lambda: tmp_path / "no" / "config.toml")
+    config = cfg.load_config(project_dir=tmp_path)
+    assert config.review.skip_trivial_diff_max_lines == 0
+
+
+def test_skip_review_fields_overridable_in_project_toml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "global_config_path", lambda: tmp_path / "no" / "config.toml")
+    project_path = tmp_path / ".ccbridge" / "config.toml"
+    project_path.parent.mkdir(parents=True)
+    project_path.write_text(
+        """
+[review]
+skip_marker = "[no-audit]"
+skip_trivial_diff_max_lines = 10
+""",
+        encoding="utf-8",
+    )
+    config = cfg.load_config(project_dir=tmp_path)
+    assert config.review.skip_marker == "[no-audit]"
+    assert config.review.skip_trivial_diff_max_lines == 10
+
+
 def test_global_config_path_uses_platformdirs() -> None:
     """Sanity: the function returns a sensible per-OS path, not /home/x on Windows."""
     path = cfg.global_config_path()

@@ -24,6 +24,11 @@ with code in this repository.
   Любая работа начинается со сверки с ROADMAP.
   Правило ведения: [R-007](Rulebook/R-007-workflow-planning-discipline.md).
 - **[`README.md`](README.md)** — суть проекта, quick start
+- **[`Projects/00-strategy/product-capabilities.md`](Projects/00-strategy/product-capabilities.md)**
+  — **что продукт умеет уже сейчас + куда движется.** Capabilities
+  matrix по версиям (v0.0.x → v0.3), use cases, rationale про
+  сложность архитектуры (8 слоёв). Точка входа для стейкхолдеров,
+  не разработчиков.
 - **[`ARCHITECTURE.md`](ARCHITECTURE.md)** — полная архитектура
   (текущая версия v0.0.3)
 - **[`AGENTS.md`](AGENTS.md)** — peer-файл для Codex / других AI агентов

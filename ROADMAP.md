@@ -7,8 +7,13 @@
 > следующее, что отложено, что уже сделано. Ссылки на все плановые
 > документы.
 
-**Обновление:** 2026-05-02 (PR2a + audit fixes shipped, PR2b started)
+**Обновление:** 2026-05-03 (PR2b shipped, PR2c этап 1 в работе под аудитом)
 **Правило ведения:** [R-007 — planning discipline](Rulebook/R-007-workflow-planning-discipline.md)
+
+**Что продукт умеет уже сейчас и куда движется:**
+[`Projects/00-strategy/product-capabilities.md`](Projects/00-strategy/product-capabilities.md)
+— capabilities matrix по версиям, use cases, rationale про сложность
+архитектуры. Первая точка входа для стейкхолдеров (не разработчиков).
 
 ---
 
@@ -36,21 +41,32 @@
 ```
   Версия     Название                              Plan / Статус
   ─────────  ────────────────────────────────────  ─────────────────────────────
-  v0.1-PR2b  Renderers + transports + cli          Plan: Projects/v0.1-mvp/
-   (Active)   + integration + e2e tests             PR2-plan.md §PR2b
-                                                    (обновлён под ADR-002 —
-                                                    JsonlRenderer удалён)
+  v0.1-PR2c  Skip-review + UserPromptSubmit hook   Plan: Discovery/logs/
+   (Active)  + Stop hook fix #6 + post-PR2b         2026-05-03-pr2c-checkpoint.md
+              audit fixes + post-PR2c аудит фиксы   §2 (substep 5 + 6) +
+                                                    decisions.md «Plan A
+                                                    confirmed»
 
-                                                   Trigger: ✅ Audit OK,
-                                                    fix/pr2a-audit-findings
-                                                    merged (61dfbc5)
+                                                    Branch: pr2b/transports-cli
+                                                    HEAD: <unstaged> ~20 files
+                                                    Tests: 350 passed
+                                                    (+59 от PR2b baseline)
 
-                                                   Branch: pr2b/transports-cli
+                                                    Trigger в работу:
+                                                    ✅ PR2b shipped в main
 
-                                                   Acceptance: AC-1, AC-2,
-                                                   AC-5..AC-8, AC-10, AC-15,
-                                                   полный AC-21. MVP работает
-                                                   end-to-end.
+                                                    ✅ Substep 5 + 6 закрыты
+                                                    ✅ 8 audit findings закрыты
+                                                       (4 blocker + 1 high +
+                                                       1 medium + 2 minor)
+                                                    ✅ Все 3 auditor repro'а
+                                                       (custom marker, force
+                                                       backup, mixed entry)
+                                                       проходят на фиксах
+
+                                                    Trigger выхода:
+                                                    📋 финальный аудит
+                                                    → merge → v0.1.0 release
 
   Слой 1     Методологическая структура            Plan: вытащено из Oil_auto
    (Active)   (Rulebook + ROADMAP + Discovery       — анализ в Discovery/logs/
