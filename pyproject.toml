@@ -38,7 +38,7 @@ dev = [
 mcp = ["mcp>=1.0"]
 
 [project.scripts]
-ccbridge = "ccbridge.cli:main"
+ccbridge = "ccbridge.cli:cli"
 
 [project.urls]
 Repository = "https://github.com/kophysty/CCBridge"
@@ -52,6 +52,10 @@ addopts = [
     "-ra",
     "--strict-markers",
     "--strict-config",
+    "-m", "not e2e",
+]
+markers = [
+    "e2e: end-to-end tests requiring real claude/codex CLIs in PATH. Skipped by default; opt in via `pytest -m e2e`.",
 ]
 
 [tool.ruff]

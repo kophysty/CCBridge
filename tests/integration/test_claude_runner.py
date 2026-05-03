@@ -293,6 +293,28 @@ def test_run_claude_passes_timeout_to_subprocess(
     assert kwargs.get("timeout") == 42
 
 
+def test_run_claude_uses_utf8_encoding_for_subprocess(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression: same Windows cp1251 issue as codex_runner.
+    subprocess.run(text=True) defaults to locale encoding; we must
+    force utf-8 so prompts containing arrows / cyrillic / emoji
+    don't crash on Russian Windows.
+    """
+
+    def handler(
+        argv: list[str], kwargs: dict[str, Any]
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 0, stdout='{"x":1}', stderr="")
+
+    calls = _stub_run(monkeypatch, handler)
+    prompt_with_unicode = "rules → check\nкириллица тест"  # noqa: RUF001
+    run_claude(prompt=prompt_with_unicode, cwd=tmp_path)
+
+    _, kwargs = calls[0]
+    assert kwargs.get("encoding") == "utf-8"
+
+
 # ---------------------------------------------------------------------------
 # Custom executable path
 # ---------------------------------------------------------------------------

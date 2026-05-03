@@ -19,25 +19,122 @@
 ### Прогресс
 
 ```
-  Этап     Что                                                Статус
-  ───────  ─────────────────────────────────────────────────  ──────────
-  PR1      core modules: verdict, events, event_bus,          ✅ Pushed
-            lockfile, audit_log, state, migrations, config     b1edc23
-            + unit tests + методология (Слой 1)                107 tests
-                                                                97% cover
+  Этап     Что                                                 Статус
+  ───────  ─────────────────────────────────────────────────  ───────────
+  PR1      core modules: verdict, events, event_bus,           ✅ Shipped
+            lockfile, audit_log, state, migrations, config       b1edc23
+            + unit tests + методология (Слой 1)                  107 tests
+                                                                  97% cover
 
-  PR2a     runners + context_builder + orchestrator           🚧 Active
-            + integration tests                                 PR2-plan.md
+  PR2a     runners + context_builder + orchestrator            ✅ Shipped
+            + integration tests                                   merged
+                                                                  to main
 
-  PR2b     renderers + transports + cli                        📋 Queued
-            + integration + e2e tests                           PR2-plan.md
+  PR2b     renderers + transports + cli + audit fixes          ✅ Shipped
+            + integration + e2e tests                             commit
+                                                                  61dfbc5
 
-  PR3      templates + ccbridge init                            📋 Queued
+  PR2c     skip-review + UserPromptSubmit hook                  🚧 Active
+            + Stop hook fix #6 + audit Major #1/2/3 fixes         on branch
+                                                                  pr2b/transports
+                                                                   -cli
+
+  PR3      templates + ccbridge init --methodology              📋 Queued
             (boilerplate для новых проектов)
 ```
 
 ### Added (Unreleased)
 
+- 2026-05-03 — **PR2c этап 1.5 раунд 2** — закрытие 3 audit-2
+  findings (повторный аудит после раунда 1):
+  - **Audit-2 Blocker #1** (init top-level filter теряет user hook
+    в mixed entry): `_strip_subcommand_from_bucket()` — nested-level
+    фильтрация commands в bucket per event, симметрично uninstall'у.
+    `_patch_settings_json()` теперь сохраняет user commands в том
+    же entry при upgrade legacy ccbridge → absolute path. +2 теста.
+  - **Audit-2 High** (replay attack: marker snapshot + restore после
+    legitimate consume): consumed-nonce store
+    `~/.ccbridge/skip-review.consumed.jsonl` (вне workspace).
+    `_record_signature_or_detect_replay()` валидирует уникальность
+    signature перед consume; replays rejected + cleanup. Auto-prune
+    expired entries. Fail-CLOSED на errors. +1 e2e replay test.
+  - **Audit-2 Docs**: `product-capabilities.md` + `CLAUDE.md` под
+    текущее состояние (PR2c этап 1.5, 11 finds closed, 353 теста).
+  Метрики: 353 теста (+3), ruff/mypy clean. Auditor repro
+  (mixed entry → THEIR_TOOL_KEPT, CCBRIDGE_UPGRADED, LEGACY_REMOVED).
+
+- 2026-05-03 — **PR2c этап 1.5** — закрытие 8 audit findings от
+  повторного аудита PR2c этапа 1. Все blocker'ы и issues fixed:
+  - **Blocker #1** (`prompt_hook` ignored `config.review.skip_marker`):
+    `_resolve_skip_marker(project_dir)` загружает config через
+    `load_config`, fail-open на ValueError → default. +4 теста
+    (custom marker, default reject when custom set, no-config
+    fallback, malformed config fallback).
+  - **Blocker #2** (marker file forge-able с workspace write):
+    HMAC-SHA256 signature через secret в `~/.ccbridge/skip-review.secret`
+    (mode 0600 на POSIX, atomic write через mkstemp + os.replace +
+    chmod). Подпись binds session_id + created_at + transcript_path +
+    marker. Stop hook re-derives и validates через `hmac.compare_digest`.
+    Reject и cleanup при mismatch. Дополнительно проверка
+    `hook_event_name == "UserPromptSubmit"` против misroute. +9 тестов.
+  - **Blocker #3** (backup poisoning через init --force / legacy):
+    `_sanitize_for_backup()` — backup всегда CCBridge-free. Если
+    источник содержит ТОЛЬКО CCBridge entries, backup не пишется.
+    +3 теста + обновление 2 существующих под новую семантику.
+  - **Blocker #4** (uninstall удалял весь parent entry, теряя user
+    hooks): `_strip_ccbridge_from_hooks_dict()` — общий helper
+    фильтрует nested `entry["hooks"]`, сохраняет parent если в
+    nested.hooks остались user commands. Применяется и для backup
+    sanitize, и для uninstall. +1 regression test.
+  - **High #5** (consume failure → still skipped): `_consume_marker()`
+    обязан успешно `unlink()` перед возвратом True; OSError в unlink
+    → audit runs. +1 тест с monkeypatched `Path.unlink`.
+  - **Medium #6** (future timestamp проходит TTL): clock-skew check
+    `age < -SKIP_MARKER_CLOCK_SKEW (5 sec)`. +2 теста (rejection +
+    small skew tolerance).
+  - **Minor #7** (shell quoting только пробелы): `_quote_for_shell()`
+    переписан на `subprocess.list2cmdline` (Windows) / `shlex.quote`
+    (POSIX). +6 unit-тестов в `tests/unit/test_shell_quoting.py`.
+  - **Minor #8** (stop_hook docstring stale): docstring обновлён —
+    skipped теперь empty stdout, добавлено описание HMAC validation
+    workflow.
+  Метрики: 350 тестов (+27 от substep 5+6 baseline 323), ruff clean,
+  mypy strict ok. Repro Blocker #1 ([no-audit] marker), Blocker #3
+  (force backup), Blocker #4 (mixed entry) — все проходят на фиксах.
+- 2026-05-03 — `Discovery/logs/decisions.md` запись «Plan A confirmed»:
+  пользователь подтвердил doувод архитектуры до конца, не упрощать.
+  Зафиксированы 8 слоёв сложности и rationale (Wave-readiness,
+  recovery model, multi-transport, lifecycle hygiene, etc.).
+- 2026-05-03 — `Projects/00-strategy/product-capabilities.md` —
+  capabilities matrix по версиям v0.0.x → v0.3, use cases, rationale
+  про сложность. Точка входа для стейкхолдеров.
+- 2026-05-03 — **PR2c этап 1** на ветке `pr2b/transports-cli`.
+  Skip-review feature (A+C) + audit fixes:
+  - `transports/prompt_hook.py` (NEW, 12 тестов) — UserPromptSubmit
+    hook, маркер `[skip-review]` (case-insensitive `casefold()`),
+    атомарная запись `.ccbridge/skip-review.json` (session_id +
+    transcript_path + ISO8601 created_at). Fail-open guardrails:
+    missing session_id / non-str prompt → empty stdout, no marker.
+  - `transports/stop_hook.py` — `_check_skip_marker()` consume:
+    match по session_id, TTL 30 мин, best-effort delete. Fail-open
+    на броken JSON. Fix #6: `verdict=skipped` → empty stdout
+    (вместо `continue:false`); CLI audit run неизменён.
+  - `core/config.py` — `[review] skip_marker` (default `[skip-review]`)
+    + `skip_trivial_diff_max_lines` (default 0 = off). 3 теста.
+  - `core/context_builder.py` — пороговый skip: при
+    `min_diff_lines > 0` И `diff_lines ≤ N` → `ContextSkipped(
+    reason="trivial_diff")`. Прокидывается через orchestrator +
+    audit_invoker.
+  - `cli.py` — рефакторинг `_patch_settings_json` /
+    `_unpatch_settings_json` под список `CCBRIDGE_HOOK_EVENTS`:
+    `init` пишет оба entry (Stop + UserPromptSubmit), `uninstall`
+    снимает оба, legacy bare `ccbridge stop-hook` авто-апгрейдится
+    на `<sys.executable> -m ccbridge.cli stop-hook`. Subcommand
+    `ccbridge prompt-hook`. +9 интеграционных тестов.
+  Метрики: 323 теста (+32 от PR2b), ruff clean, mypy strict ok.
+- 2026-05-03 — `Discovery/logs/2026-05-03-pr2c-checkpoint.md` —
+  чекпоинт перед context compaction (план substep 5+6 + ответы
+  аудитора verbatim + marker file schema).
 - 2026-05-02 — `ADR/ADR-002-audit-jsonl-ownership-orchestrator.md`
   (Accepted) — фиксация архитектурного решения по конфликту
   PR2a vs PR2b plan. Variant A: orchestrator owns audit.jsonl

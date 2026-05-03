@@ -138,6 +138,78 @@ def test_binary_only_diff_yields_skipped(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Trivial-diff threshold (substep 5d)
+# ---------------------------------------------------------------------------
+# When config.review.skip_trivial_diff_max_lines is set to N > 0 and the
+# total changed-lines count is ≤ N, build_context returns ContextSkipped
+# with reason="trivial_diff" so the orchestrator can short-circuit
+# without invoking Codex.
+#
+# Default behaviour (min_diff_lines=0 → off) is unchanged: any non-zero
+# diff proceeds to Codex.
+
+
+def test_diff_below_min_diff_lines_yields_trivial_skipped(tmp_path: Path) -> None:
+    repo = tmp_path / "proj"
+    _init_repo(repo)
+    _commit_file(repo, "a.py", "x = 1\n", "init")
+    _modify_file(repo, "a.py", "x = 2\n")  # 1 added + 1 deleted = 2 lines
+
+    skipped = build_context(
+        project_dir=repo,
+        ccbridge_dir=repo / ".ccbridge",
+        iteration_id="iter-1",
+        run_uuid="run-1",
+        rules_paths=(),
+        max_diff_lines=2000,
+        min_diff_lines=5,
+    )
+    assert isinstance(skipped, ContextSkipped)
+    assert skipped.reason == "trivial_diff"
+
+
+def test_diff_above_min_diff_lines_proceeds_normally(tmp_path: Path) -> None:
+    repo = tmp_path / "proj"
+    _init_repo(repo)
+    _commit_file(repo, "a.py", "x = 1\n", "init")
+    big = "\n".join(f"line_{i}" for i in range(10)) + "\n"
+    _modify_file(repo, "a.py", big)
+
+    result = build_context(
+        project_dir=repo,
+        ccbridge_dir=repo / ".ccbridge",
+        iteration_id="iter-1",
+        run_uuid="run-1",
+        rules_paths=(),
+        max_diff_lines=2000,
+        min_diff_lines=5,
+    )
+    # Above the threshold → not skipped.
+    assert not isinstance(result, ContextSkipped)
+
+
+def test_min_diff_lines_zero_is_off_by_default(tmp_path: Path) -> None:
+    """min_diff_lines=0 (default) means no trivial-diff skipping —
+    even a 1-line change goes to Codex.
+    """
+    repo = tmp_path / "proj"
+    _init_repo(repo)
+    _commit_file(repo, "a.py", "x = 1\n", "init")
+    _modify_file(repo, "a.py", "x = 2\n")  # 2 changed lines
+
+    result = build_context(
+        project_dir=repo,
+        ccbridge_dir=repo / ".ccbridge",
+        iteration_id="iter-1",
+        run_uuid="run-1",
+        rules_paths=(),
+        max_diff_lines=2000,
+        # min_diff_lines unset → defaults to 0 → off
+    )
+    assert not isinstance(result, ContextSkipped)
+
+
+# ---------------------------------------------------------------------------
 # Initial-commit edge case
 # ---------------------------------------------------------------------------
 

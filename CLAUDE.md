@@ -11,15 +11,24 @@ with code in this repository.
   `Discovery/logs/*-handoff-*.md` или `*-checkpoint-*.md` (по mtime)
   если есть. Это точка синхронизации с предыдущими сессиями.
   **Текущий актуальный handoff:**
-  [`Discovery/logs/2026-05-02-handoff-pr2a-audit.md`](Discovery/logs/2026-05-02-handoff-pr2a-audit.md)
-  (после PR2a merge, ожидает аудита).
-  Предыдущий: [`2026-05-02-handoff-pr1-to-pr2.md`](Discovery/logs/2026-05-02-handoff-pr1-to-pr2.md).
+  [`Discovery/logs/2026-05-03-pr2c-checkpoint.md`](Discovery/logs/2026-05-03-pr2c-checkpoint.md)
+  (PR2c этап 1: Major #1/#2/#3 closed, Minor #4 + skip-review +
+  Stop hook fix #6 pending; ветка pr2b/transports-cli, HEAD
+  83a6d5b, 291 passed).
+  Предыдущие: [`2026-05-03-pr2b-audit-findings.md`](Discovery/logs/2026-05-03-pr2b-audit-findings.md),
+  [`2026-05-02-handoff-pr2a-audit.md`](Discovery/logs/2026-05-02-handoff-pr2a-audit.md),
+  [`2026-05-02-handoff-pr1-to-pr2.md`](Discovery/logs/2026-05-02-handoff-pr1-to-pr2.md).
 - **⭐ [`ROADMAP.md`](ROADMAP.md)** — **ВТОРОЕ ЧТО ЧИТАТЬ.** Единый
   реестр планов и версий: что делаем сейчас (Active), что следующее
   (Queued), что отложено (Pending), что уже в production (Shipped).
   Любая работа начинается со сверки с ROADMAP.
   Правило ведения: [R-007](Rulebook/R-007-workflow-planning-discipline.md).
 - **[`README.md`](README.md)** — суть проекта, quick start
+- **[`Projects/00-strategy/product-capabilities.md`](Projects/00-strategy/product-capabilities.md)**
+  — **что продукт умеет уже сейчас + куда движется.** Capabilities
+  matrix по версиям (v0.0.x → v0.3), use cases, rationale про
+  сложность архитектуры (8 слоёв). Точка входа для стейкхолдеров,
+  не разработчиков.
 - **[`ARCHITECTURE.md`](ARCHITECTURE.md)** — полная архитектура
   (текущая версия v0.0.3)
 - **[`AGENTS.md`](AGENTS.md)** — peer-файл для Codex / других AI агентов
@@ -102,14 +111,16 @@ with code in this repository.
 **CCBridge** — Python CLI tool для автоматизации peer-review между
 Claude Code CLI и OpenAI Codex CLI.
 
-**Текущая версия:** v0.0.3-draft (PR1+PR2a in main)
-**Текущая фаза:** Audit checkpoint после PR2a → PR2b (transports + cli)
+**Текущая версия:** v0.0.3-draft (PR1 + PR2a + PR2b shipped в main)
+**Текущая фаза:** PR2c этап 1.5 — skip-review + audit fixes (на ветке)
 
 **Архитектура:** [`ARCHITECTURE.md`](ARCHITECTURE.md)
+**Capabilities:** [`Projects/00-strategy/product-capabilities.md`](Projects/00-strategy/product-capabilities.md)
 
-**Status: ACTIVE** — PR1 (core modules) и PR2a (runners +
-context_builder + orchestrator) в main, push в GitHub. Ожидает аудита
-перед стартом PR2b.
+**Status: ACTIVE** — PR1 + PR2a + PR2b shipped в main (последний
+shipped commit 61dfbc5). На ветке `pr2b/transports-cli` идёт
+PR2c этап 1.5: skip-review feature + закрытие 11 audit findings
+(2 раунда). Финальный аудит → merge → v0.1.0.
 
 ---
 
@@ -118,15 +129,23 @@ context_builder + orchestrator) в main, push в GitHub. Ожидает ауди
 См. [`ROADMAP.md`](ROADMAP.md) — секция Active.
 
 ```
-  Audit       Аудит PR2a перед стартом PR2b          🚧 Active
-   (2026-     (claude_runner, codex_runner,           Plan: Discovery/logs/
-    05-02)     context_builder, orchestrator)         2026-05-02-handoff-
-                                                       pr2a-audit.md
+  v0.1-PR2c   skip-review + UserPromptSubmit hook +    🚧 Active
+              audit fixes (2 раунда: 8 + 3 finds)      Plan: Discovery/logs/
+                                                        2026-05-03-pr2c-
+                                                        checkpoint.md +
+                                                        decisions.md
+                                                        «Plan A confirmed»
 
-                                                      Trigger: ✅ PR2a merged
-                                                       (a740890), pushed.
-                                                      Acceptance: ОК на
-                                                       старт PR2b.
+                                                      Trigger в работу:
+                                                       ✅ PR2b shipped
+                                                       ✅ 11 finds closed
+                                                          (включая audit-2
+                                                          replay + nested
+                                                          patch filter)
+
+                                                      Trigger выхода:
+                                                       📋 финальный аудит
+                                                       → merge → v0.1.0
 ```
 
 ---

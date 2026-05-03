@@ -148,6 +148,7 @@ def run_audit(
     project_name: str = "untitled",
     project_id: str = "",
     max_diff_lines: int = 2000,
+    min_diff_lines: int = 0,
 ) -> OrchestratorOutcome:
     """Run one full audit cycle.
 
@@ -187,6 +188,7 @@ def run_audit(
             project_name=project_name,
             project_id=project_id,
             max_diff_lines=max_diff_lines,
+            min_diff_lines=min_diff_lines,
             started_wall=started_wall,
         )
 
@@ -211,6 +213,7 @@ def _run_loop(
     project_name: str,
     project_id: str,
     max_diff_lines: int,
+    min_diff_lines: int,
     started_wall: float,
 ) -> OrchestratorOutcome:
     final_verdict = "error"
@@ -235,6 +238,7 @@ def _run_loop(
                     run_uuid=run_uuid,
                     rules_paths=rules_paths,
                     max_diff_lines=max_diff_lines,
+                    min_diff_lines=min_diff_lines,
                     recent_audits=recent_audits,
                 )
             except ContextTooLargeError as exc:

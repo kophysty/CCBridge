@@ -206,11 +206,19 @@ Merge в `main` через `git merge --no-ff pr2a/orchestrator-runners`
                                             читает stdin JSON,                без вмешат.)
                                             проверяет stop_hook_active,      AC-10 (timeout
                                             вызывает orchestrator,            → освобождение
-                                            пишет decision: block в           lockfile)
-                                            stdout. EventBus →
-                                            RichRenderer (stdout).
-                                            audit.jsonl уже пишется
-                                            orchestrator'ом (ADR-002).
+                                            пишет decision JSON в stdout      lockfile)
+                                            (либо empty, либо
+                                             {"decision":"block",...} для
+                                             fail, либо
+                                             {"continue":false,...} для
+                                             needs_human/error/skipped/
+                                             lock_busy). EventBus →
+                                            RichRenderer на STDERR (stdout
+                                            зарезервирован под decision
+                                            JSON; Claude парсит stdout при
+                                            exit 0). Fail-open контракт:
+                                            любая ошибка → empty stdout +
+                                            stderr diagnostic + exit 0.
   5   transports/audit_watch.py             tail -f audit.jsonl с rich       AC-21 (live tail
                                             форматтированием. Используется    < 1 сек)
                                             как ccbridge audit watch.        AC-5/AC-12

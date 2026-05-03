@@ -707,3 +707,36 @@ def test_run_codex_passes_timeout_to_subprocess(
     calls = _stub_run(monkeypatch, handler)
     run_codex(prompt="x", cwd=tmp_path, timeout=42)
     assert calls[0][1].get("timeout") == 42
+
+
+def test_run_codex_uses_utf8_encoding_for_subprocess(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression for Windows live-smoke crash: subprocess.run with
+    text=True on Windows defaults to locale encoding (cp1251 on RU
+    locale). Our SYSTEM_PROMPT contains characters like → (U+2192)
+    that aren't in cp1251 → UnicodeEncodeError when piping prompt
+    via stdin.
+
+    The runner must pass encoding="utf-8" explicitly to subprocess.run
+    so the behaviour is deterministic across platforms.
+    """
+
+    def handler(
+        argv: list[str], kwargs: dict[str, Any]
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=EVENT_STREAM_FIXTURE, stderr=""
+        )
+
+    calls = _stub_run(monkeypatch, handler)
+    # Prompt with the exact characters from real SYSTEM_PROMPT that
+    # tripped cp1251: arrow + cyrillic.
+    prompt_with_unicode = "rules → check\nкириллица тест"  # noqa: RUF001
+    run_codex(prompt=prompt_with_unicode, cwd=tmp_path)
+
+    _, kwargs = calls[0]
+    assert kwargs.get("encoding") == "utf-8", (
+        "subprocess.run must use encoding='utf-8' to handle non-ASCII "
+        "in prompts on Windows where locale default is cp1251"
+    )
